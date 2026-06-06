@@ -1,10 +1,11 @@
 // hqplugin — HelloHQ plugin CLI.
 //
-// Status: command surface scaffold (Phase 4 — begin). Each command parses and
-// prints its plan; the build/test/publish implementations land incrementally.
+// `build` is implemented (Rust → wasm); `test`/`publish` land incrementally.
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
+import 'package:hqplugin/src/build.dart';
+import 'package:hqplugin/src/test_cmd.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -35,10 +36,11 @@ class _BuildCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    stdout.writeln('build: lang=${argResults?['lang']} '
-        'entry=${argResults?['entry']} out=${argResults?['out']}');
-    stderr.writeln('hqplugin build is not yet implemented (Phase 4).');
-    return 2;
+    return runBuild(
+      lang: argResults?['lang'] as String?,
+      entry: argResults?['entry'] as String?,
+      out: argResults?['out'] as String? ?? 'plugin.wasm',
+    );
   }
 }
 
@@ -50,17 +52,27 @@ class _TestCommand extends Command<int> {
 
   _TestCommand() {
     argParser
-      ..addOption('wasm')
+      ..addOption('wasm', help: 'Tier-2 plugin .wasm to run.')
+      ..addMultiOption('grant', help: 'Permission id to grant (repeatable).')
+      ..addOption('fixture', help: 'JSON fixture of portfolios/currencies.')
+      ..addOption('input',
+          help: 'Run input JSON.', defaultsTo: '{"function":"main","args":{}}')
       ..addOption('sidecar')
       ..addOption('bundle', help: 'WebView ui.zip to load.');
   }
 
   @override
   Future<int> run() async {
-    stdout.writeln('test: wasm=${argResults?['wasm']} '
-        'sidecar=${argResults?['sidecar']} bundle=${argResults?['bundle']}');
-    stderr.writeln('hqplugin test is not yet implemented (Phase 4).');
-    return 2;
+    if (argResults?['sidecar'] != null || argResults?['bundle'] != null) {
+      stderr.writeln('test: only --wasm (Tier-2) is supported today.');
+      return 2;
+    }
+    return runTest(
+      wasmPath: argResults?['wasm'] as String?,
+      grants: (argResults?['grant'] as List<String>?) ?? const [],
+      fixturePath: argResults?['fixture'] as String?,
+      input: argResults?['input'] as String? ?? '{"function":"main","args":{}}',
+    );
   }
 }
 

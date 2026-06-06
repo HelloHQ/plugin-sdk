@@ -28,3 +28,12 @@ pubspec.lock
 .DS_Store
 .idea/
 .vscode/
+
+# Vendored Wasmtime native lib for the CLI Wasm runner (fetched, not committed)
+third_party/wasmtime/macos-arm64/
+third_party/wasmtime/macos-x64/
+third_party/wasmtime/linux-x64/
+third_party/wasmtime/linux-arm64/
+third_party/wasmtime/windows-x64/
+third_party/wasmtime/include/
+.ci-wasmtime-tmp/

@@ -11,6 +11,10 @@ executables:
 
 dependencies:
   args: ^2.5.0
+  path: ^1.9.0
+  ffi: ^2.1.0
+  hellohq_plugin_mock_host:
+    path: ../mock-host
 
 dev_dependencies:
   test: ^1.25.0

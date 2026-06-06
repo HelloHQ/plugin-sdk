@@ -1,58 +1,298 @@
 /// In-process mock of the HelloHQ host ABI for local plugin testing.
 ///
 /// Lets authors exercise a plugin's host calls without running the full app:
-/// seed fixture data and a permission allow-list, then resolve the same
+/// seed fixture data and a permission grant list, then resolve the same
 /// permission-gated reads the real host exposes.
 ///
-/// Status: skeleton (Phase 4 — begin). Mirrors the host's permission-gate
-/// semantics (deny > grant) so tests fail the same way production does.
+/// The [MockHost.resolve] method implements the exact `hq_read` JSON protocol
+/// the production `PluginSyncBridge` answers — same request shape
+/// (`{method, portfolio_id?}`), same response shape (`{ok, data}` /
+/// `{ok:false, error}`), same data shapes (`PluginSyncReader`), and the same
+/// gate semantics (deny > grant, portfolio scope filtering). A plugin that
+/// works against this mock works against the real host.
 library;
 
-class MockApiException implements Exception {
-  final String code; // e.g. "permission-denied"
-  final String detail;
-  const MockApiException(this.code, this.detail);
-  @override
-  String toString() => 'MockApiException($code: $detail)';
-}
+import 'dart:convert';
 
-class PortfolioName {
+// ─────────────────────────────────────────────────────────────────────────────
+// Fixture data
+// ─────────────────────────────────────────────────────────────────────────────
+
+class MockPortfolio {
   final String id;
   final String name;
-  const PortfolioName(this.id, this.name);
+  final List<MockSheet> sheets;
+
+  /// currency id → aggregated total (the `read:aggregated_values` result).
+  final Map<String, double> totals;
+
+  const MockPortfolio(
+    this.id,
+    this.name, {
+    this.sheets = const [],
+    this.totals = const {},
+  });
 }
 
-/// Fixture data + granted permissions for a mock run.
+class MockSheet {
+  final String id;
+  final String name;
+
+  /// 'asset' or 'debt'.
+  final String type;
+  final List<MockSection> sections;
+
+  const MockSheet(this.id, this.name, this.type, {this.sections = const []});
+}
+
+class MockSection {
+  final String id;
+  final String name;
+  final List<MockItem> items;
+
+  const MockSection(this.id, this.name, {this.items = const []});
+}
+
+class MockItem {
+  final String id;
+  final String name;
+
+  const MockItem(this.id, this.name);
+}
+
+class MockCurrency {
+  final String id;
+  final String name;
+  final String symbol;
+  final num rate;
+
+  const MockCurrency(this.id, this.name, this.symbol, this.rate);
+}
+
+/// An event the plugin emitted via `emit_event` (captured for assertions).
+class EmittedEvent {
+  final String name;
+  final String payload;
+  const EmittedEvent(this.name, this.payload);
+  @override
+  String toString() => 'EmittedEvent($name, $payload)';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Permission gate (faithful to PluginPermissionGate)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A minimal, faithful copy of the host's permission gate: deny beats grant,
+/// and a grant may carry a `{portfolios: [...]}` scope.
+class MockGate {
+  final List<Map<String, dynamic>> _granted;
+  final Set<String> _denied;
+
+  MockGate({
+    List<Map<String, dynamic>> granted = const [],
+    Set<String> denied = const {},
+  }) : _granted = granted,
+       _denied = denied;
+
+  /// Convenience: grant a flat list of permission ids (no scope).
+  factory MockGate.allow(Iterable<String> ids) =>
+      MockGate(granted: [for (final id in ids) {'id': id}]);
+
+  bool isGranted(String perm) =>
+      !_denied.contains(perm) && _granted.any((g) => g['id'] == perm);
+
+  bool isAllowed(String perm, {String? portfolioId}) {
+    if (_denied.contains(perm)) return false;
+    return _granted.any((g) {
+      if (g['id'] != perm) return false;
+      final scope = g['scope'] as Map<String, dynamic>?;
+      if (scope == null) return true;
+      final allowed = scope['portfolios'];
+      if (allowed is List) {
+        return portfolioId != null && allowed.contains(portfolioId);
+      }
+      return true;
+    });
+  }
+
+  /// Allowed portfolio ids for [perm], or null when unrestricted.
+  Set<String>? allowedPortfolios(String perm) {
+    if (!isGranted(perm)) return <String>{};
+    final union = <String>{};
+    for (final g in _granted.where((g) => g['id'] == perm)) {
+      final scope = g['scope'] as Map<String, dynamic>?;
+      final list = scope?['portfolios'];
+      if (scope == null || list is! List) return null; // unrestricted
+      union.addAll(list.map((e) => e.toString()));
+    }
+    return union;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mock host
+// ─────────────────────────────────────────────────────────────────────────────
+
 class MockHost {
-  final Set<String> granted;
-  final List<PortfolioName> portfolios;
-  final Map<String, double> currencyRates; // "USD>EUR" -> rate
+  final MockGate gate;
+  final List<MockPortfolio> portfolios;
+  final List<MockCurrency> currencies;
+
+  /// Events the plugin pushed via `emit_event`, in order.
+  final List<EmittedEvent> emittedEvents = [];
 
   MockHost({
+    MockGate? gate,
     Iterable<String> granted = const [],
     this.portfolios = const [],
-    this.currencyRates = const {},
-  }) : granted = granted.toSet();
+    this.currencies = const [],
+  }) : gate = gate ?? MockGate.allow(granted);
 
-  void _require(String permission) {
-    if (!granted.contains(permission)) {
-      throw MockApiException('permission-denied', permission);
+  /// Resolve an `hq_read` request exactly as the production bridge does.
+  ///
+  /// Request: `{"method": "read:portfolio_names", "portfolio_id": "ptf_a"?}`.
+  /// Response: `{"ok": true, "data": ...}` or `{"ok": false, "error": ...}`.
+  String resolve(String requestJson) {
+    final Map<String, dynamic> req;
+    try {
+      final decoded = jsonDecode(requestJson);
+      if (decoded is! Map<String, dynamic>) return _err('bad_request');
+      req = decoded;
+    } catch (_) {
+      return _err('bad_request');
+    }
+    final method = req['method'];
+    if (method is! String) return _err('bad_request');
+    final portfolioId = req['portfolio_id'] as String?;
+
+    switch (method) {
+      case 'read:portfolio_names':
+        if (!gate.isGranted(method)) return _err('denied:$method');
+        return _ok(_portfolioNames());
+      case 'read:sheet_structure':
+        final denied = _gatePortfolio(method, portfolioId);
+        if (denied != null) return denied;
+        return _ok({'portfolios': _sheetStructure(method, portfolioId)});
+      case 'read:asset_count':
+        final denied = _gatePortfolio(method, portfolioId);
+        if (denied != null) return denied;
+        return _ok({'portfolios': _assetCounts(method, portfolioId)});
+      case 'read:currency_rates':
+        if (!gate.isAllowed(method)) return _err('denied:$method');
+        return _ok([
+          for (final c in currencies)
+            {'id': c.id, 'name': c.name, 'symbol': c.symbol, 'rate': c.rate},
+        ]);
+      case 'read:aggregated_values':
+        final denied = _gatePortfolio(method, portfolioId);
+        if (denied != null) return denied;
+        return _ok({'portfolios': _aggregated(method, portfolioId)});
+      default:
+        return _err('unknown_method:$method');
     }
   }
 
-  List<PortfolioName> readPortfolioNames() {
-    _require('read:portfolio_names');
-    return portfolios;
+  /// Record an event the plugin emitted. Wire this as the `emit_event` sink
+  /// when driving a real wasm runner.
+  void emit(String name, String payload) =>
+      emittedEvents.add(EmittedEvent(name, payload));
+
+  // ── Per-method builders (shapes mirror PluginSyncReader) ──────────────────
+
+  List<Map<String, dynamic>> _portfolioNames() {
+    final allowed = gate.allowedPortfolios('read:portfolio_names');
+    return [
+      for (final p in portfolios)
+        if (allowed == null || allowed.contains(p.id))
+          {'id': p.id, 'name': p.name},
+    ];
   }
 
-  double readCurrencyRate(String from, String to) {
-    _require('read:currency_rates');
-    final key = '$from>$to';
-    final rate = currencyRates[key];
-    if (rate == null) throw MockApiException('not-found', key);
-    return rate;
+  List<Map<String, dynamic>> _sheetStructure(String perm, String? portfolioId) {
+    return [
+      for (final p in _scoped(perm, portfolioId))
+        {
+          'id': p.id,
+          'sheets': [
+            for (final s in p.sheets)
+              {
+                'id': s.id,
+                'name': s.name,
+                'sheet_type': s.type,
+                'sections': [
+                  for (final sec in s.sections)
+                    {
+                      'id': sec.id,
+                      'name': sec.name,
+                      'items': [
+                        for (final it in sec.items)
+                          {'id': it.id, 'name': it.name},
+                      ],
+                    },
+                ],
+              },
+          ],
+        },
+    ];
   }
 
-  // TODO(phase4): read-sheet-structure, read-asset-count,
-  // read-aggregated-values (scoped), write-external-file, emit-event.
+  List<Map<String, dynamic>> _assetCounts(String perm, String? portfolioId) {
+    final out = <Map<String, dynamic>>[];
+    for (final p in _scoped(perm, portfolioId)) {
+      var asset = 0, debt = 0;
+      for (final s in p.sheets) {
+        final n = s.sections.fold<int>(0, (a, sec) => a + sec.items.length);
+        if (s.type == 'debt') {
+          debt += n;
+        } else {
+          asset += n;
+        }
+      }
+      out.add({
+        'id': p.id,
+        'asset_items': asset,
+        'debt_items': debt,
+        'total_items': asset + debt,
+      });
+    }
+    return out;
+  }
+
+  List<Map<String, dynamic>> _aggregated(String perm, String? portfolioId) {
+    return [
+      for (final p in _scoped(perm, portfolioId))
+        {
+          'id': p.id,
+          'totals': [
+            for (final e in p.totals.entries)
+              {'currency_id': e.key, 'total': e.value},
+          ],
+        },
+    ];
+  }
+
+  // ── Gate helpers ──────────────────────────────────────────────────────────
+
+  String? _gatePortfolio(String perm, String? portfolioId) {
+    if (portfolioId != null) {
+      return gate.isAllowed(perm, portfolioId: portfolioId)
+          ? null
+          : _err('denied:$perm');
+    }
+    return gate.isGranted(perm) ? null : _err('denied:$perm');
+  }
+
+  List<MockPortfolio> _scoped(String perm, String? portfolioId) {
+    if (portfolioId != null) {
+      return portfolios.where((p) => p.id == portfolioId).toList();
+    }
+    final allowed = gate.allowedPortfolios(perm);
+    return [
+      for (final p in portfolios)
+        if (allowed == null || allowed.contains(p.id)) p,
+    ];
+  }
+
+  String _ok(Object? data) => jsonEncode({'ok': true, 'data': data});
+  String _err(String error) => jsonEncode({'ok': false, 'error': error});
 }
