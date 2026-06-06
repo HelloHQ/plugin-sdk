@@ -130,6 +130,31 @@ class MockGate {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI backend mock
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Callback invoked when a plugin calls `ai:complete`.
+///
+/// [messages] is the list of `{"role","content"}` objects from the request.
+/// [opts] is the `opts` map (`max_tokens`, optional `temperature`).
+/// Return the text the mock AI should reply with.
+typedef MockAiCompleteCallback = String Function(
+  List<dynamic> messages,
+  Map<String, dynamic> opts,
+);
+
+/// Returns a canned response, cycling the last entry when exhausted.
+MockAiCompleteCallback cannedResponses(List<String> responses) {
+  assert(responses.isNotEmpty, 'cannedResponses requires at least one entry');
+  var index = 0;
+  return (_, __) {
+    final r = responses[index];
+    if (index < responses.length - 1) index++;
+    return r;
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Mock host
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -137,6 +162,10 @@ class MockHost {
   final MockGate gate;
   final List<MockPortfolio> portfolios;
   final List<MockCurrency> currencies;
+
+  /// Handles `ai:complete` requests. If null, returns a `not configured` error.
+  /// Requires `ai:inference` in the grant list.
+  final MockAiCompleteCallback? onAiComplete;
 
   /// Events the plugin pushed via `emit_event`, in order.
   final List<EmittedEvent> emittedEvents = [];
@@ -146,6 +175,7 @@ class MockHost {
     Iterable<String> granted = const [],
     this.portfolios = const [],
     this.currencies = const [],
+    this.onAiComplete,
   }) : gate = gate ?? MockGate.allow(granted);
 
   /// Resolve an `hq_read` request exactly as the production bridge does.
@@ -187,6 +217,21 @@ class MockHost {
         final denied = _gatePortfolio(method, portfolioId);
         if (denied != null) return denied;
         return _ok({'portfolios': _aggregated(method, portfolioId)});
+      case 'ai:complete':
+        if (!gate.isGranted('ai:inference')) return _err('denied:ai:inference');
+        final callback = onAiComplete;
+        if (callback == null) {
+          return _err('ai:inference: no mock AI backend configured — pass onAiComplete to MockHost');
+        }
+        final messages = (req['messages'] as List?) ?? const <dynamic>[];
+        final opts = (req['opts'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+        final content = callback(messages, opts);
+        return _ok({
+          'content': content,
+          'input_tokens': 42,
+          'output_tokens': content.split(' ').length,
+          'model': 'claude-sonnet-4-6',
+        });
       default:
         return _err('unknown_method:$method');
     }

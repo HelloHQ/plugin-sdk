@@ -99,6 +99,36 @@ type HostError struct {
 	Message string
 }
 
+// ── AI inference types (v2 feature — requires ai:inference permission) ────────
+
+// AiMessage is a single turn in an AI conversation.
+type AiMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// UserMessage constructs a user-role AiMessage.
+func UserMessage(content string) AiMessage { return AiMessage{Role: "user", Content: content} }
+
+// AssistantMessage constructs an assistant-role AiMessage.
+func AssistantMessage(content string) AiMessage {
+	return AiMessage{Role: "assistant", Content: content}
+}
+
+// InferenceOpts controls the AI completion call.
+type InferenceOpts struct {
+	MaxTokens   uint32   `json:"max_tokens"`
+	Temperature *float32 `json:"temperature,omitempty"`
+}
+
+// InferenceResponse is returned by AiComplete.
+type InferenceResponse struct {
+	Content      string `json:"content"`
+	InputTokens  uint32 `json:"input_tokens"`
+	OutputTokens uint32 `json:"output_tokens"`
+	Model        string `json:"model"`
+}
+
 func (e *HostError) Error() string {
 	return fmt.Sprintf("host error (%s): %s", e.Kind, e.Message)
 }
@@ -142,6 +172,34 @@ func ReadAggregatedValues(portfolioID string) (any, error) {
 // No-op in declarative/headless mode.
 func EmitEvent(name string, payload []byte) {
 	emitEventImpl(name, payload)
+}
+
+// AiComplete routes a message list through the host AI backend.
+// The plugin never holds an API key; the host proxies via HQAuthProxy.
+// Requires the ai:inference manifest permission (v2 feature).
+func AiComplete(messages []AiMessage, opts InferenceOpts) (*InferenceResponse, error) {
+	type aiReq struct {
+		Method   string        `json:"method"`
+		Messages []AiMessage   `json:"messages"`
+		Opts     InferenceOpts `json:"opts"`
+	}
+	reqBytes, _ := json.Marshal(aiReq{Method: "ai:complete", Messages: messages, Opts: opts})
+	respBytes := hqReadImpl(reqBytes)
+	if respBytes == nil {
+		return nil, &HostError{Kind: "transport", Message: "nil response from host"}
+	}
+	var resp hqResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return nil, &HostError{Kind: "decode", Message: err.Error()}
+	}
+	if !resp.OK {
+		return nil, parseHostError(resp.Error)
+	}
+	var out InferenceResponse
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return nil, &HostError{Kind: "decode", Message: err.Error()}
+	}
+	return &out, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

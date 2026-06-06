@@ -8,6 +8,7 @@ from .protocol import (
     UnsupportedFunction,
 )
 from .sidecar import Dispatch, emit_event, serve
+from . import host
 
 __all__ = [
     "PROTOCOL_VERSION",
@@ -16,4 +17,5 @@ __all__ = [
     "Dispatch",
     "serve",
     "emit_event",
+    "host",
 ]

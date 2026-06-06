@@ -168,20 +168,58 @@ pub struct CurrencyRate {
     pub rate: f64,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AI inference types (v2 feature — requires `ai:inference` permission)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A single message in an AI conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl AiMessage {
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { role: "user".into(), content: content.into() }
+    }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant".into(), content: content.into() }
+    }
+}
+
+/// Parameters for `host::ai_complete`.
+#[derive(Debug, Clone, Serialize)]
+pub struct InferenceOpts {
+    pub max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
+impl Default for InferenceOpts {
+    fn default() -> Self {
+        Self { max_tokens: 512, temperature: None }
+    }
+}
+
+/// The response from `host::ai_complete`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InferenceResponse {
+    pub content: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub model: String,
+}
+
 /// Typed host reads. Each requires the matching manifest permission; a denied
 /// read returns [`HostError::Denied`]. Data shapes mirror the host's
 /// `PluginSyncReader` JSON.
 pub mod host {
     use super::*;
 
-    /// Low-level escape hatch: send a raw request and get the `data` value back.
-    pub fn read_raw(method: &str, portfolio_id: Option<&str>) -> Result<Value, HostError> {
-        let mut req = json!({ "method": method });
-        if let Some(pid) = portfolio_id {
-            req["portfolio_id"] = json!(pid);
-        }
-        let bytes = serde_json::to_vec(&req).unwrap();
-        let req_ptr = write_mem(&bytes);
+    // Internal: serialize req to bytes, call hq_read, parse the envelope.
+    fn send_request_bytes(bytes: &[u8]) -> Result<Value, HostError> {
+        let req_ptr = write_mem(bytes);
         let packed = unsafe { hq_read(req_ptr, bytes.len() as i32) };
         let resp_ptr = ((packed >> 32) & 0xFFFF_FFFF) as i32;
         let resp_len = (packed & 0xFFFF_FFFF) as i32;
@@ -201,6 +239,15 @@ pub mod host {
                 Err(HostError::Decode(err.to_string()))
             }
         }
+    }
+
+    /// Low-level escape hatch: send a raw request and get the `data` value back.
+    pub fn read_raw(method: &str, portfolio_id: Option<&str>) -> Result<Value, HostError> {
+        let mut req = json!({ "method": method });
+        if let Some(pid) = portfolio_id {
+            req["portfolio_id"] = json!(pid);
+        }
+        send_request_bytes(&serde_json::to_vec(&req).unwrap())
     }
 
     fn read_typed<T: DeserializeOwned>(
@@ -235,6 +282,23 @@ pub mod host {
     /// `read:aggregated_values` — per-currency portfolio totals (Verified tier).
     pub fn read_aggregated_values(portfolio_id: Option<&str>) -> Result<Value, HostError> {
         read_raw("read:aggregated_values", portfolio_id)
+    }
+
+    /// `ai:complete` — route messages through the host AI backend.
+    ///
+    /// The plugin never holds API keys; the host proxies through HQAuthProxy.
+    /// Requires the `ai:inference` manifest permission (v2 feature).
+    pub fn ai_complete(
+        messages: Vec<AiMessage>,
+        opts: InferenceOpts,
+    ) -> Result<InferenceResponse, HostError> {
+        let req = json!({
+            "method": "ai:complete",
+            "messages": messages,
+            "opts": opts,
+        });
+        let data = send_request_bytes(&serde_json::to_vec(&req).unwrap())?;
+        serde_json::from_value(data).map_err(|e| HostError::Decode(e.to_string()))
     }
 
     /// Push an event to the plugin's WebView. No-op in declarative/headless mode.
