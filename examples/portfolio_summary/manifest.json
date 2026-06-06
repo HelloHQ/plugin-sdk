@@ -1,0 +1,21 @@
+{
+  "id": "io.github.hellohq.portfolio-summary",
+  "name": "Portfolio Summary",
+  "version": "1.0.0",
+  "description": "Concise overview of all portfolios: names and asset counts.",
+  "author": "HelloHQ",
+  "author_url": "https://hellohq.io",
+  "repo": "https://github.com/HelloHQ/plugin-sdk",
+  "license": "Apache-2.0",
+  "categories": ["analytics"],
+  "min_host_version": "1.0.0",
+  "execution_mode": "sidecar",
+  "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/v1.0.0/portfolio_summary.py",
+  "content_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ui_type": "declarative",
+  "entry_function": "run",
+  "permissions": [
+    { "id": "read:portfolio_names" },
+    { "id": "read:asset_count" }
+  ]
+}
