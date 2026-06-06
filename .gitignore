@@ -1,0 +1,29 @@
+# Rust
+/sdks/rust/target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+dist/
+build/
+
+# JS / TS
+node_modules/
+/sdks/js/dist/
+
+# Go
+*.wasm
+
+# Dart
+.dart_tool/
+pubspec.lock
+
+# Generated bindings (regenerate from plugin-protocol)
+/abi/generated/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,19 @@
+[package]
+name = "hellohq-plugin-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "SDK for building Tier 2 (Wasm) HelloHQ plugins in Rust."
+license = "Apache-2.0"
+repository = "https://github.com/HelloHQ/plugin-sdk"
+keywords = ["hellohq", "plugin", "wasm", "wasi"]
+categories = ["wasm"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Build plugins for the Tier 2 target:
+#   cargo build --target wasm32-wasip1 --release

@@ -1,0 +1,22 @@
+{
+  "name": "@hellohq/plugin-sdk",
+  "version": "0.1.0",
+  "description": "SDK for building Tier 2 (Wasm / WebView) HelloHQ plugins in TypeScript.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HelloHQ/plugin-sdk.git",
+    "directory": "sdks/js"
+  },
+  "keywords": ["hellohq", "plugin", "wasm", "webview"],
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hellohq-plugin-sdk"
+version = "0.1.0"
+description = "SDK for building Tier 1 (Python) HelloHQ plugins."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "HelloHQ" }]
+keywords = ["hellohq", "plugin", "sidecar"]
+
+[project.urls]
+Homepage = "https://github.com/HelloHQ/plugin-sdk"
+Protocol = "https://github.com/HelloHQ/plugin-protocol"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hellohq_plugin_sdk"]
