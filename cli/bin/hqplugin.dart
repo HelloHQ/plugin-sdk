@@ -1,10 +1,9 @@
 // hqplugin — HelloHQ plugin CLI.
-//
-// `build` is implemented (Rust → wasm); `test`/`publish` land incrementally.
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:hqplugin/src/build.dart';
+import 'package:hqplugin/src/publish.dart';
 import 'package:hqplugin/src/test_cmd.dart';
 
 Future<void> main(List<String> args) async {
@@ -83,13 +82,22 @@ class _PublishCommand extends Command<int> {
   final description = 'Open a registry PR for a tagged release.';
 
   _PublishCommand() {
-    argParser.addOption('version', help: 'Semver to publish.');
+    argParser
+      ..addOption('version', help: 'Semver to publish (required, e.g. 0.2.0).')
+      ..addOption('wasm',
+          help: 'Path to plugin.wasm to hash.',
+          defaultsTo: 'plugin.wasm')
+      ..addFlag('submit',
+          help: 'Open the PR automatically via the `gh` CLI.',
+          negatable: false);
   }
 
   @override
   Future<int> run() async {
-    stdout.writeln('publish: version=${argResults?['version']}');
-    stderr.writeln('hqplugin publish is not yet implemented (Phase 4).');
-    return 2;
+    return runPublish(
+      version: argResults?['version'] as String?,
+      wasmPath: argResults?['wasm'] as String?,
+      submit: argResults?['submit'] as bool? ?? false,
+    );
   }
 }
