@@ -1,5 +1,6 @@
 # Rust
 /sdks/rust/target/
+/examples/*/target/
 Cargo.lock
 
 # Python

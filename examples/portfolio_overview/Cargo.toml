@@ -1,0 +1,18 @@
+[package]
+name = "portfolio_overview"
+version = "0.1.0"
+edition = "2021"
+description = "Reference HelloHQ Tier-2 plugin, authored with the Rust SDK."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hellohq-plugin-sdk = { path = "../../sdks/rust" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

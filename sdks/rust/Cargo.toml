@@ -15,5 +15,8 @@ crate-type = ["cdylib", "rlib"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Build plugins for the Tier 2 target:
-#   cargo build --target wasm32-wasip1 --release
+# Build plugins for the Tier 2 target the host loads (no WASI imports):
+#   rustup target add wasm32-unknown-unknown
+#   cargo build --target wasm32-unknown-unknown --release
+#
+# The SDK's own unit tests run on the host arch: `cargo test`.
