@@ -3,6 +3,12 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+typedef PublishCommandRunner = Future<ProcessResult> Function(
+  String executable,
+  List<String> arguments, {
+  String? workingDirectory,
+});
+
 /// Publish a plugin release to the HelloHQ plugin registry via a GitHub PR.
 ///
 /// The workflow:
@@ -10,8 +16,8 @@ import 'package:path/path.dart' as p;
 ///   2. Locate `manifest.json` in the current directory.
 ///   3. Hash the built `plugin.wasm` (SHA-256 via `shasum`/`sha256sum`).
 ///   4. Produce a stamped registry-ready manifest (version + hash updated).
-///   5. If `gh` is available and the user passes `--submit`, clone the registry
-///      repo to a temp dir, write the manifest, and open a PR via `gh pr create`.
+///   5. If `gh` is available and the user passes `--submit`, create or reuse the
+///      user's registry fork, push a branch there, and open a PR.
 ///      Otherwise, print the manifest so the author can submit the PR manually.
 Future<int> runPublish({
   String? version,
@@ -19,6 +25,7 @@ Future<int> runPublish({
   bool submit = false,
   StringSink? out_,
   StringSink? err_,
+  PublishCommandRunner commandRunner = _runCommand,
 }) async {
   final o = out_ ?? stdout;
   final e = err_ ?? stderr;
@@ -71,7 +78,8 @@ Future<int> runPublish({
 
   final sha256 = await _sha256(wasm.path);
   if (sha256 == null) {
-    e.writeln('publish: could not compute SHA-256 — shasum/sha256sum not found.');
+    e.writeln(
+        'publish: could not compute SHA-256 — shasum/sha256sum not found.');
     return 69;
   }
 
@@ -96,6 +104,7 @@ Future<int> runPublish({
       registryPath: registryPath,
       o: o,
       e: e,
+      commandRunner: commandRunner,
     );
     return code;
   }
@@ -107,7 +116,8 @@ Future<int> runPublish({
   o.writeln('To publish:');
   o.writeln('  1. Fork https://github.com/HelloHQ/plugin-registry');
   o.writeln('  2. Create plugins/$pluginId/$version.json with the JSON above.');
-  o.writeln('  3. Open a pull request — HelloHQ CI validates it automatically.');
+  o.writeln(
+      '  3. Open a pull request — HelloHQ CI validates it automatically.');
   o.writeln('  Or rerun with --submit to have hqplugin open the PR for you.');
   return 0;
 }
@@ -163,8 +173,9 @@ Future<int> _openPR({
   required String registryPath,
   required StringSink o,
   required StringSink e,
+  required PublishCommandRunner commandRunner,
 }) async {
-  if (!await _hasExecutable('gh')) {
+  if (!await _hasExecutable('gh', commandRunner)) {
     e.writeln(
       'publish: --submit requires the GitHub CLI (gh).\n'
       '  Install from https://cli.github.com and run `gh auth login` first.',
@@ -174,38 +185,164 @@ Future<int> _openPR({
 
   final tmp = await Directory.systemTemp.createTemp('hqplugin-registry-');
   try {
-    o.writeln('publish: cloning HelloHQ/plugin-registry …');
-    final cloneResult = await Process.run(
+    final loginResult = await commandRunner(
       'gh',
-      ['repo', 'clone', 'HelloHQ/plugin-registry', tmp.path],
+      ['api', 'user', '--jq', '.login'],
     );
-    if (cloneResult.exitCode != 0) {
-      e.write(cloneResult.stderr);
-      e.writeln('publish: failed to clone plugin-registry.');
-      return cloneResult.exitCode;
+    if (!_succeeded(loginResult)) {
+      return _reportFailure(
+        loginResult,
+        'publish: failed to resolve the authenticated GitHub user.',
+        e,
+      );
+    }
+    final login = '${loginResult.stdout}'.trim();
+    if (login.isEmpty) {
+      e.writeln('publish: GitHub CLI returned an empty authenticated user.');
+      return 69;
+    }
+
+    final forkRepo = '$login/plugin-registry';
+    final forkResult = await commandRunner(
+      'gh',
+      [
+        'repo',
+        'view',
+        forkRepo,
+        '--json',
+        'parent',
+        '--jq',
+        '.parent.nameWithOwner',
+      ],
+    );
+    if (_succeeded(forkResult)) {
+      final parent = '${forkResult.stdout}'.trim();
+      if (parent != 'HelloHQ/plugin-registry') {
+        e.writeln(
+          'publish: $forkRepo exists but is not a fork of '
+          'HelloHQ/plugin-registry.',
+        );
+        return 65;
+      }
+    } else {
+      o.writeln('publish: creating fork $forkRepo ...');
+      final createForkResult = await commandRunner(
+        'gh',
+        ['repo', 'fork', 'HelloHQ/plugin-registry', '--clone=false'],
+      );
+      if (!_succeeded(createForkResult)) {
+        return _reportFailure(
+          createForkResult,
+          'publish: failed to create plugin-registry fork.',
+          e,
+        );
+      }
+    }
+
+    o.writeln('publish: cloning $forkRepo ...');
+    final cloneResult = await commandRunner(
+      'gh',
+      ['repo', 'clone', forkRepo, tmp.path],
+    );
+    if (!_succeeded(cloneResult)) {
+      return _reportFailure(
+        cloneResult,
+        'publish: failed to clone plugin-registry fork.',
+        e,
+      );
+    }
+
+    final upstreamResult = await commandRunner(
+      'git',
+      [
+        'remote',
+        'add',
+        'upstream',
+        'https://github.com/HelloHQ/plugin-registry.git',
+      ],
+      workingDirectory: tmp.path,
+    );
+    if (!_succeeded(upstreamResult)) {
+      return _reportFailure(
+        upstreamResult,
+        'publish: failed to configure the upstream registry remote.',
+        e,
+      );
+    }
+
+    final fetchResult = await commandRunner(
+      'git',
+      ['fetch', 'upstream', 'main'],
+      workingDirectory: tmp.path,
+    );
+    if (!_succeeded(fetchResult)) {
+      return _reportFailure(
+        fetchResult,
+        'publish: failed to fetch the upstream registry.',
+        e,
+      );
     }
 
     final branch = 'plugin/$pluginId-$version';
-    await _git(['checkout', '-b', branch], tmp.path);
+    final checkoutResult = await commandRunner(
+      'git',
+      ['checkout', '-b', branch, 'upstream/main'],
+      workingDirectory: tmp.path,
+    );
+    if (!_succeeded(checkoutResult)) {
+      return _reportFailure(
+        checkoutResult,
+        'publish: failed to create branch $branch.',
+        e,
+      );
+    }
 
     final dest = File(p.join(tmp.path, registryPath));
     dest.parent.createSync(recursive: true);
     dest.writeAsStringSync(manifestJson);
 
-    await _git(['add', registryPath], tmp.path);
-    await _git(
-      ['commit', '-m', 'plugin: add $pluginId $version'],
-      tmp.path,
+    final addResult = await commandRunner(
+      'git',
+      ['add', registryPath],
+      workingDirectory: tmp.path,
     );
-    await _git(['push', '-u', 'origin', branch], tmp.path);
+    if (!_succeeded(addResult)) {
+      return _reportFailure(addResult, 'publish: git add failed.', e);
+    }
 
-    final prResult = await Process.run(
+    final commitResult = await commandRunner(
+      'git',
+      ['commit', '-m', 'plugin: add $pluginId $version'],
+      workingDirectory: tmp.path,
+    );
+    if (!_succeeded(commitResult)) {
+      return _reportFailure(commitResult, 'publish: git commit failed.', e);
+    }
+
+    final pushResult = await commandRunner(
+      'git',
+      ['push', '-u', 'origin', branch],
+      workingDirectory: tmp.path,
+    );
+    if (!_succeeded(pushResult)) {
+      return _reportFailure(
+        pushResult,
+        'publish: failed to push $branch to $forkRepo.',
+        e,
+      );
+    }
+
+    final prResult = await commandRunner(
       'gh',
       [
         'pr',
         'create',
         '--repo',
         'HelloHQ/plugin-registry',
+        '--head',
+        '$login:$branch',
+        '--base',
+        'main',
         '--title',
         'Add plugin: $pluginId $version',
         '--body',
@@ -213,11 +350,14 @@ Future<int> _openPR({
       ],
       workingDirectory: tmp.path,
     );
-    if (prResult.exitCode != 0) {
-      e.write(prResult.stderr);
-      return prResult.exitCode;
+    if (!_succeeded(prResult)) {
+      return _reportFailure(
+        prResult,
+        'publish: failed to open the registry pull request.',
+        e,
+      );
     }
-    o.writeln('publish: ✓ PR opened');
+    o.writeln('publish: PR opened');
     o.write(prResult.stdout);
     return 0;
   } finally {
@@ -225,13 +365,41 @@ Future<int> _openPR({
   }
 }
 
-Future<void> _git(List<String> args, String workingDir) async {
-  await Process.run('git', args, workingDirectory: workingDir);
+Future<ProcessResult> _runCommand(
+  String executable,
+  List<String> arguments, {
+  String? workingDirectory,
+}) {
+  return Process.run(
+    executable,
+    arguments,
+    workingDirectory: workingDirectory,
+  );
 }
 
-Future<bool> _hasExecutable(String name) async {
+bool _succeeded(ProcessResult result) => result.exitCode == 0;
+
+int _reportFailure(
+  ProcessResult result,
+  String message,
+  StringSink e,
+) {
+  if ('${result.stderr}'.isNotEmpty) {
+    e.write(result.stderr);
+    if (!'${result.stderr}'.endsWith('\n')) {
+      e.writeln();
+    }
+  }
+  e.writeln(message);
+  return result.exitCode == 0 ? 69 : result.exitCode;
+}
+
+Future<bool> _hasExecutable(
+  String name,
+  PublishCommandRunner commandRunner,
+) async {
   try {
-    final r = await Process.run(name, ['--version']);
+    final r = await commandRunner(name, ['--version']);
     return r.exitCode == 0;
   } catch (_) {
     return false;
