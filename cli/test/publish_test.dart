@@ -196,4 +196,89 @@ void main() {
     expect(calls.any((call) => call.startsWith('git push ')), isFalse);
     expect(calls.any((call) => call.startsWith('gh pr create ')), isFalse);
   });
+
+  // ── Provenance + licensing gates ──────────────────────────────────────────
+  // These reject before any artifact hashing or network call, so the command
+  // runner must never be invoked.
+
+  group('provenance/licensing gates', () {
+    /// Writes [manifest] to a temp cwd and runs publish with a runner that
+    /// fails the test if it is ever called. Returns (exitCode, stderr).
+    Future<({int code, String err})> runWith(
+      Map<String, dynamic> manifest,
+    ) async {
+      final dir = Directory.systemTemp.createTempSync('hqplugin_gate_');
+      addTearDown(() {
+        try {
+          dir.deleteSync(recursive: true);
+        } catch (_) {}
+      });
+      File(p.join(dir.path, 'manifest.json'))
+          .writeAsStringSync(jsonEncode(manifest));
+
+      final calls = <String>[];
+      Future<ProcessResult> runner(
+        String executable,
+        List<String> arguments, {
+        String? workingDirectory,
+      }) async {
+        calls.add(executable);
+        return ProcessResult(1, 0, '', '');
+      }
+
+      final previous = Directory.current;
+      Directory.current = dir;
+      addTearDown(() => Directory.current = previous);
+
+      final err = StringBuffer();
+      final code = await runPublish(
+        version: '1.0.0',
+        submit: true,
+        out_: StringBuffer(),
+        err_: err,
+        commandRunner: runner,
+      );
+      // No process should have run for a gated rejection.
+      expect(calls, isEmpty, reason: 'gate must reject before any process call');
+      return (code: code, err: err.toString());
+    }
+
+    test('rejects enterprise provenance', () async {
+      final r = await runWith({
+        'id': 'com.example.internal',
+        'provenance': 'enterprise',
+      });
+      expect(r.code, 65);
+      expect(r.err.toLowerCase(), contains('enterprise'));
+    });
+
+    test('rejects core provenance', () async {
+      final r = await runWith({
+        'id': 'com.hellohq.thing',
+        'provenance': 'core',
+      });
+      expect(r.code, 65);
+      expect(r.err.toLowerCase(), contains('core'));
+    });
+
+    test('rejects commercial licensing', () async {
+      final r = await runWith({
+        'id': 'com.example.pro',
+        'licensing': {'kind': 'commercial', 'product_id': 'sku_x'},
+      });
+      expect(r.code, 65);
+      expect(r.err.toLowerCase(), contains('commercial'));
+    });
+
+    test('warns (but does not fail) on open-source without spdx', () async {
+      // open_source + no spdx is a warning; the publish still proceeds past the
+      // gate to hashing, where the missing plugin.wasm makes it exit 66.
+      final r = await runWith({
+        'id': 'com.example.oss',
+        'licensing': {'kind': 'open_source'},
+      });
+      expect(r.code, 66); // reached the wasm-not-found check → not gated out
+      expect(r.err.toLowerCase(), contains('spdx'));
+    });
+  });
 }

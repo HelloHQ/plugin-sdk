@@ -14,9 +14,13 @@ typedef PublishCommandRunner = Future<ProcessResult> Function(
 /// The workflow:
 ///   1. Validate `--version` is a well-formed semver string.
 ///   2. Locate `manifest.json` in the current directory.
-///   3. Hash the built `plugin.wasm` (SHA-256 via `shasum`/`sha256sum`).
-///   4. Produce a stamped registry-ready manifest (version + hash updated).
-///   5. If `gh` is available and the user passes `--submit`, create or reuse the
+///   3. Gate on provenance/licensing: only `community` (or unset) provenance and
+///      non-`commercial` licensing may be published to the public registry —
+///      `enterprise`/`core` and commercial plugins are rejected here with the
+///      same reasoning the registry CI uses.
+///   4. Hash the built `plugin.wasm` (SHA-256 via `shasum`/`sha256sum`).
+///   5. Produce a stamped registry-ready manifest (version + hash updated).
+///   6. If `gh` is available and the user passes `--submit`, create or reuse the
 ///      user's registry fork, push a branch there, and open a PR.
 ///      Otherwise, print the manifest so the author can submit the PR manually.
 Future<int> runPublish({
@@ -64,6 +68,46 @@ Future<int> runPublish({
   if (pluginId == null || pluginId.isEmpty) {
     e.writeln('publish: manifest.json is missing the "id" field.');
     return 65;
+  }
+
+  // ── Provenance + licensing gates ──────────────────────────────────────────
+  // Mirror the registry CI and the in-app install rules so authors get the
+  // rejection here, before opening a PR that would just fail CI.
+  final provenance = (manifest['provenance'] as String?) ?? 'community';
+  if (provenance == 'enterprise') {
+    e.writeln(
+      'publish: provenance "enterprise" plugins are private to the org that '
+      'built them and are not published to the public registry.\n'
+      '  Deploy them through your organisation\'s plugin policy instead.',
+    );
+    return 65;
+  }
+  if (provenance == 'core') {
+    e.writeln(
+      'publish: provenance "core" is reserved for HelloHQ first-party plugins '
+      '(published through an internal signed pipeline, not this command).',
+    );
+    return 65;
+  }
+
+  final licensing =
+      (manifest['licensing'] as Map<String, dynamic>?) ?? const {};
+  final licenseKind = (licensing['kind'] as String?) ?? 'open_source';
+  if (licenseKind == 'commercial') {
+    e.writeln(
+      'publish: commercial licensing is not yet available — the '
+      'HelloHQ-brokered marketplace has not shipped.\n'
+      '  Publish as open_source for now (set licensing.kind: "open_source").',
+    );
+    return 65;
+  }
+  if (licenseKind == 'open_source' &&
+      (licensing['spdx'] == null ||
+          (licensing['spdx'] as String).isEmpty)) {
+    e.writeln(
+      'publish: warning — open-source plugin has no licensing.spdx. Add one '
+      '(e.g. "MIT", "Apache-2.0") so users see the licence in the catalog.',
+    );
   }
 
   // ── Hash the wasm artifact ────────────────────────────────────────────────
