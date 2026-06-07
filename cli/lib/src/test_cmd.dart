@@ -218,14 +218,27 @@ Future<int> runSidecarTest({
   );
 
   // ── Spawn the sidecar process ─────────────────────────────────────────────
+  // Make `import hellohq_plugin_sdk` resolve without a pip install by adding the
+  // in-repo SDK source to PYTHONPATH when we can locate it.
+  final sdkPath = _locatePythonSdk(pluginFile.parent);
+  final sep = Platform.isWindows ? ';' : ':';
+  final existingPyPath = Platform.environment['PYTHONPATH'] ?? '';
+  final pyPath = [
+    if (sdkPath != null) sdkPath,
+    if (existingPyPath.isNotEmpty) existingPyPath,
+  ].join(sep);
+
   final process = await Process.start(
     python,
-    [pluginFile.path],
+    // Absolute path: workingDirectory is the plugin's own dir, so a relative
+    // arg would be resolved against it twice.
+    [pluginFile.absolute.path],
     workingDirectory: pluginFile.parent.path,
     environment: {
       ...Platform.environment,
       // Ensure unbuffered output so NDJSON lines arrive immediately.
       'PYTHONUNBUFFERED': '1',
+      if (pyPath.isNotEmpty) 'PYTHONPATH': pyPath,
     },
   );
 
@@ -275,6 +288,15 @@ Future<int> runSidecarTest({
 }
 
 /// Drive one request/response lifecycle over the sidecar stdio pipes.
+///
+/// Wire protocol (mirrors `hellohq_plugin_sdk.serve`):
+///   plugin → host: `{"type":"ready","protocol_version":"…"}`
+///   host → plugin: `{"id":1,"function":"run","args":{…}}`   (RPC request)
+///   plugin → host: `{"id":1,"result":<value>}`              (success)
+///                  `{"id":1,"error":{"code":"…","message":"…"}}`  (failure)
+/// Mid-dispatch the plugin may issue synchronous host calls carrying
+/// `{"type":"ai_complete"|"storage_*"|"http_request","seq":N,…}`, which are
+/// answered inline by [MockSidecarHost]. Events carry `{"type":"event",…}`.
 Future<int> _runProtocol({
   required Process process,
   required IOSink stdinSink,
@@ -284,23 +306,23 @@ Future<int> _runProtocol({
   required StringSink o,
   required StringSink e,
 }) async {
-  // The seq for our top-level call.
-  const callSeq = 1;
+  // The id for our top-level RPC call.
+  const callId = 1;
 
   final lines = process.stdout
       .transform(const Utf8Decoder(allowMalformed: true))
       .transform(const LineSplitter());
 
-  // Completer that resolves when we get the result/error for callSeq.
+  // Completer that resolves when we get the RPC reply for callId.
   final resultCompleter = Completer<Map<String, dynamic>>();
 
   // We process stdout line by line.  Host calls from the plugin are answered
-  // inline; lifecycle messages are handled per their type.
+  // inline; the RPC reply (keyed by `id`) completes the run.
   bool ready = false;
 
   final sub = lines.listen(
     (line) {
-      if (line.isEmpty) return;
+      if (line.trim().isEmpty) return;
 
       Map<String, dynamic> msg;
       try {
@@ -310,37 +332,32 @@ Future<int> _runProtocol({
         return;
       }
 
+      // ── RPC reply (carries `id`, no `type`) ──────────────────────────────
+      if (msg.containsKey('id') && msg['id'] == callId) {
+        if (!resultCompleter.isCompleted) resultCompleter.complete(msg);
+        return;
+      }
+
       final type = msg['type'] as String?;
 
       // ── Lifecycle ────────────────────────────────────────────────────────
       if (type == 'ready') {
         ready = true;
-        // Send our call.
+        // Send the RPC request the sidecar's serve() loop expects.
         stdinSink.writeln(jsonEncode({
-          'type': 'call',
-          'seq': callSeq,
+          'id': callId,
           'function': function,
           'args': args,
         }));
         return;
       }
 
-      if (type == 'result' && msg['seq'] == callSeq) {
-        resultCompleter.complete(msg);
+      if (type == 'event' || type == 'pong') {
+        // Plugin emitted an event / heartbeat — no reply needed.
         return;
       }
 
-      if (type == 'error' && msg['seq'] == callSeq) {
-        resultCompleter.complete(msg);
-        return;
-      }
-
-      if (type == 'event') {
-        // Plugin emitted an event — capture it, answer nothing.
-        return;
-      }
-
-      // ── Synchronous host calls ───────────────────────────────────────────
+      // ── Synchronous host calls (ai_complete / storage_* / http_request) ──
       final response = host.handleLine(line);
       if (response != null) {
         stdinSink.writeln(response);
@@ -362,7 +379,7 @@ Future<int> _runProtocol({
   );
 
   try {
-    // Wait for result with a timeout.
+    // Wait for the RPC reply with a timeout.
     final result = await resultCompleter.future.timeout(
       const Duration(seconds: 30),
       onTimeout: () => throw TimeoutException('plugin timed out after 30 s'),
@@ -371,15 +388,20 @@ Future<int> _runProtocol({
     // Send shutdown.
     stdinSink.writeln(jsonEncode({'type': 'shutdown'}));
 
-    if (result['type'] == 'error') {
+    final error = result['error'];
+    if (error != null) {
       e.writeln('\n── Plugin error ──');
-      e.writeln('  code: ${result['error_code'] ?? 'unknown'}');
-      e.writeln('  message: ${result['error'] ?? result['message'] ?? '(no message)'}');
+      if (error is Map) {
+        e.writeln('  code: ${error['code'] ?? 'unknown'}');
+        e.writeln('  message: ${error['message'] ?? '(no message)'}');
+      } else {
+        e.writeln('  $error');
+      }
       return 70;
     }
 
-    // Success.
-    final data = result['data'];
+    // Success — the dispatch return value is in `result`.
+    final data = result['result'];
     o.writeln('\n── Declarative output ──');
     o.writeln(const JsonEncoder.withIndent('  ').convert(data));
     return 0;
@@ -397,6 +419,23 @@ Future<int> _runProtocol({
   } finally {
     await sub.cancel();
   }
+}
+
+/// Locate the in-repo Python SDK (`sdks/python`) by walking up from [start]
+/// and from the current directory, so `import hellohq_plugin_sdk` resolves
+/// during `hqplugin test --sidecar` without a prior `pip install`.
+String? _locatePythonSdk(Directory start) {
+  for (final origin in {start.path, Directory.current.path}) {
+    var dir = Directory(origin);
+    for (var i = 0; i < 8; i++) {
+      final pkg = Directory('${dir.path}/sdks/python/hellohq_plugin_sdk');
+      if (pkg.existsSync()) return '${dir.path}/sdks/python';
+      final parent = dir.parent;
+      if (parent.path == dir.path) break;
+      dir = parent;
+    }
+  }
+  return null;
 }
 
 /// Find the Python entry file for [path].

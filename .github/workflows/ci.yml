@@ -231,6 +231,12 @@ jobs:
         with:
           sdk: '3.4'
 
+      # The CLI's sidecar tests (test/sidecar_test.dart) spawn a Python sidecar,
+      # so Python must be available on the runner.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Cache Dart pub
         uses: actions/cache@v4
         with:
@@ -301,6 +307,11 @@ jobs:
         with:
           sdk: '3.4'
 
+      # Tier-1 sidecar e2e (below) spawns a Python plugin.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Cache Dart pub
         uses: actions/cache@v4
         with:
@@ -338,11 +349,20 @@ jobs:
           name: portfolio-overview-wasm
           path: _wasm
 
-      - name: Run portfolio_overview through hqplugin test
+      - name: Run portfolio_overview through hqplugin test (Tier-2 Wasm)
         run: |
           dart run cli/bin/hqplugin.dart test \
             --wasm _wasm/portfolio_overview.wasm \
             --grant read:portfolio_names
+        shell: bash
+
+      # Tier-1 sidecar e2e: the CLI locates sdks/python automatically (PYTHONPATH),
+      # spawns the CPython plugin, and round-trips a plugin:storage call.
+      - name: Run notes-keeper through hqplugin test (Tier-1 sidecar)
+        run: |
+          dart run cli/bin/hqplugin.dart test \
+            --sidecar examples/notes-keeper \
+            --grant plugin:storage
         shell: bash
 
   # ── Protocol version consistency (pure text; Linux only) ───────────────────

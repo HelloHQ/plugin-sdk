@@ -89,10 +89,19 @@ Future<int> runPublish({
     ..['content_hash_sha256'] = sha256;
 
   final manifestJson = const JsonEncoder.withIndent('  ').convert(stamped);
-  final registryPath = 'plugins/$pluginId/$version.json';
+  // The registry stores exactly one manifest per plugin at this fixed path;
+  // its CI rejects any other layout (dir name must equal the plugin id).
+  final registryPath = 'plugins/$pluginId/manifest.json';
 
   o.writeln('publish: id=$pluginId  version=$version');
   o.writeln('publish: sha256=$sha256');
+  if (manifest['min_host_version'] == null) {
+    e.writeln(
+      'publish: warning — manifest.json has no "min_host_version"; the '
+      'registry requires it and CI will reject the PR. Add e.g. '
+      '"min_host_version": "1.0.0".',
+    );
+  }
   o.writeln('');
 
   // ── Submit (optional, requires `gh`) ──────────────────────────────────────
@@ -115,7 +124,7 @@ Future<int> runPublish({
   o.writeln('');
   o.writeln('To publish:');
   o.writeln('  1. Fork https://github.com/HelloHQ/plugin-registry');
-  o.writeln('  2. Create plugins/$pluginId/$version.json with the JSON above.');
+  o.writeln('  2. Create $registryPath with the JSON above.');
   o.writeln(
       '  3. Open a pull request — HelloHQ CI validates it automatically.');
   o.writeln('  Or rerun with --submit to have hqplugin open the PR for you.');

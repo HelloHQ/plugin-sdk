@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
-/// The Tier-2 Wasm target the host loads (no WASI imports).
+/// The Tier-2 Wasm target the host loads for Rust (no WASI imports).
 const wasmTarget = 'wasm32-unknown-unknown';
 
 /// Build a plugin to a `.wasm` (or package a sidecar). Returns a process-style
@@ -26,17 +26,72 @@ Future<int> runBuild({
     case 'rust':
       return _buildRust(entry ?? '.', out, o, e);
     case 'go':
+      return _buildGo(entry ?? '.', out, o, e);
     case 'typescript':
     case 'python':
       e.writeln(
-        'build --lang $lang is not wired yet; only rust is implemented today. '
-        'Track the other SDKs in sdks/$lang.',
+        'build --lang $lang is not wired yet. TypeScript (WebView ui.zip '
+        'bundling) and Python (sidecar bundle) need a defined package format; '
+        'use the SDK build steps in sdks/$lang for now. Rust and Go are '
+        'supported.',
       );
       return 2;
     default:
       e.writeln('build: unknown --lang "$lang".');
       return 64;
   }
+}
+
+/// Build a Go plugin to a WASI-preview1 `.wasm` (the host's Go execution mode).
+Future<int> _buildGo(
+  String pkgDir,
+  String out,
+  StringSink o,
+  StringSink e,
+) async {
+  final goMod = p.join(pkgDir, 'go.mod');
+  final hasGoFiles = Directory(pkgDir).existsSync() &&
+      Directory(pkgDir)
+          .listSync()
+          .whereType<File>()
+          .any((f) => f.path.endsWith('.go'));
+  if (!File(goMod).existsSync() && !hasGoFiles) {
+    e.writeln('build: no go.mod or .go files in "$pkgDir". Pass --entry <pkg-dir>.');
+    return 66; // EX_NOINPUT
+  }
+  if (!await _hasGoToolchain()) {
+    e.writeln('build: go not found. Install Go from https://go.dev/dl');
+    return 69; // EX_UNAVAILABLE
+  }
+
+  final outFile = File(out);
+  if (outFile.parent.path.isNotEmpty) {
+    outFile.parent.createSync(recursive: true);
+  }
+  // Absolute output path so `go build` (run with workingDirectory) targets it.
+  final outAbs = outFile.absolute.path;
+
+  o.writeln('build: GOOS=wasip1 GOARCH=wasm go build -o $out  ($pkgDir)');
+  final result = await Process.run(
+    'go',
+    ['build', '-o', outAbs, '.'],
+    workingDirectory: pkgDir,
+    environment: {
+      ...Platform.environment,
+      'GOOS': 'wasip1',
+      'GOARCH': 'wasm',
+    },
+  );
+  if ('${result.stdout}'.isNotEmpty) o.write(result.stdout);
+  if ('${result.stderr}'.isNotEmpty) e.write(result.stderr);
+  if (result.exitCode != 0) return result.exitCode;
+
+  if (!outFile.existsSync()) {
+    e.writeln('build: go build reported success but $out was not produced.');
+    return 70; // EX_SOFTWARE
+  }
+  o.writeln('build: ✓ → $out (${outFile.lengthSync()} bytes)');
+  return 0;
 }
 
 Future<int> _buildRust(
@@ -110,6 +165,15 @@ Future<bool> _hasExecutable(String name) async {
   try {
     final r = await Process.run(name, ['--version']);
     return r.exitCode == 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Go uses `go version` (not `--version`), so it needs its own probe.
+Future<bool> _hasGoToolchain() async {
+  try {
+    return (await Process.run('go', ['version'])).exitCode == 0;
   } catch (_) {
     return false;
   }

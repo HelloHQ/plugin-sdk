@@ -18,3 +18,10 @@ Protocol = "https://github.com/HelloHQ/plugin-protocol"
 
 [tool.hatch.build.targets.wheel]
 packages = ["hellohq_plugin_sdk"]
+
+# Self-contained pytest config so the SDK does not inherit a parent repo's
+# pyproject (e.g. a workspace-root --cov addopts). CI passes --cov explicitly
+# on the command line, where pytest-cov is installed.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
