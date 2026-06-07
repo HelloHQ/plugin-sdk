@@ -341,3 +341,193 @@ class MockHost {
   String _ok(Object? data) => jsonEncode({'ok': true, 'data': data});
   String _err(String error) => jsonEncode({'ok': false, 'error': error});
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier 1 sidecar mock (NDJSON protocol)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Callback for mocking network fetch in [MockSidecarHost].
+///
+/// Receives the full request map and returns a response map with keys
+/// `status` (int), `headers` (Map<String, dynamic>), and `body` (String).
+typedef MockNetworkCallback = Map<String, dynamic> Function(
+  Map<String, dynamic> request,
+);
+
+/// An in-process mock of the HelloHQ host-side NDJSON protocol for Tier 1
+/// (Python sidecar) plugin testing.
+///
+/// During a sidecar test the plugin sends synchronous host-call messages on
+/// stdout and blocks on a stdin `readline()`.  [MockSidecarHost] processes
+/// these messages and returns mock responses so you can drive a sidecar plugin
+/// without the real HelloHQ app.
+///
+/// Usage with [Process]:
+/// ```dart
+/// final mock = MockSidecarHost(
+///   granted: ['read:portfolio_names', 'ai:inference'],
+///   onAiComplete: cannedResponses(['Great portfolio!']),
+/// );
+/// final process = await Process.start('python3', ['plugin.py']);
+/// await for (final line in process.stdout.transform(utf8.decoder).transform(const LineSplitter())) {
+///   final response = mock.handleLine(line);
+///   if (response != null) process.stdin.writeln(response);
+/// }
+/// ```
+class MockSidecarHost {
+  final MockGate gate;
+
+  /// Handles `ai_complete` requests. Requires `ai:inference` in grants.
+  final MockAiCompleteCallback? onAiComplete;
+
+  /// Handles `http_request` calls. Requires `network:fetch` in grants.
+  /// Defaults to returning HTTP 403 for every request if not provided.
+  final MockNetworkCallback? onNetworkFetch;
+
+  /// In-memory key-value store backing `storage_get/set/delete`.
+  /// Requires `plugin:storage` in grants.
+  /// Pre-seed it before the test or inspect it afterwards.
+  final Map<String, String> storage;
+
+  MockSidecarHost({
+    MockGate? gate,
+    Iterable<String> granted = const [],
+    this.onAiComplete,
+    this.onNetworkFetch,
+    Map<String, String>? storage,
+  }) : gate = gate ?? MockGate.allow(granted),
+       storage = storage ?? {};
+
+  /// Process one NDJSON line from the plugin's stdout.
+  ///
+  /// Returns the NDJSON response string that should be written to the plugin's
+  /// stdin, or `null` if the line is not a recognised host-call request (e.g.
+  /// a lifecycle message that needs no synchronous reply, or a malformed line).
+  String? handleLine(String line) {
+    final Map<String, dynamic> msg;
+    try {
+      final decoded = jsonDecode(line);
+      if (decoded is! Map<String, dynamic>) return null;
+      msg = decoded;
+    } catch (_) {
+      return null;
+    }
+
+    final type = msg['type'] as String?;
+    final seq = msg['seq'];
+    if (type == null || seq == null) return null;
+
+    switch (type) {
+      case 'ai_complete':
+        return _handleAiComplete(msg, seq);
+      case 'storage_get':
+        return _handleStorageGet(msg, seq);
+      case 'storage_set':
+        return _handleStorageSet(msg, seq);
+      case 'storage_delete':
+        return _handleStorageDelete(msg, seq);
+      case 'http_request':
+        return _handleHttpRequest(msg, seq);
+      default:
+        // Lifecycle messages (ready, result, error, event) need no synchronous reply.
+        return null;
+    }
+  }
+
+  // ── ai_complete ────────────────────────────────────────────────────────────
+
+  String _handleAiComplete(Map<String, dynamic> msg, dynamic seq) {
+    if (!gate.isGranted('ai:inference')) {
+      return _errResp('ai_response', seq, 'denied:ai:inference', 'permission_denied');
+    }
+    final callback = onAiComplete;
+    if (callback == null) {
+      return _errResp('ai_response', seq,
+          'ai:inference: no mock AI backend configured — pass onAiComplete to MockSidecarHost',
+          'execution_failed');
+    }
+    final messages = (msg['messages'] as List?) ?? const <dynamic>[];
+    final opts = (msg['opts'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final content = callback(messages, opts);
+    return jsonEncode({
+      'type': 'ai_response',
+      'seq': seq,
+      'content': content,
+      'usage': {
+        'input_tokens': 42,
+        'output_tokens': content.split(' ').length,
+        'model': 'claude-sonnet-4-6',
+      },
+    });
+  }
+
+  // ── storage ────────────────────────────────────────────────────────────────
+
+  String _handleStorageGet(Map<String, dynamic> msg, dynamic seq) {
+    if (!gate.isGranted('plugin:storage')) {
+      return _errResp('storage_response', seq, 'denied:plugin:storage', 'permission_denied');
+    }
+    final key = msg['key'] as String?;
+    if (key == null) {
+      return _errResp('storage_response', seq, 'missing key', 'invalid_input');
+    }
+    return jsonEncode({'type': 'storage_response', 'seq': seq, 'value': storage[key]});
+  }
+
+  String _handleStorageSet(Map<String, dynamic> msg, dynamic seq) {
+    if (!gate.isGranted('plugin:storage')) {
+      return _errResp('storage_response', seq, 'denied:plugin:storage', 'permission_denied');
+    }
+    final key = msg['key'] as String?;
+    final value = msg['value'] as String?;
+    if (key == null || value == null) {
+      return _errResp('storage_response', seq, 'missing key or value', 'invalid_input');
+    }
+    storage[key] = value;
+    return jsonEncode({'type': 'storage_response', 'seq': seq, 'ok': true});
+  }
+
+  String _handleStorageDelete(Map<String, dynamic> msg, dynamic seq) {
+    if (!gate.isGranted('plugin:storage')) {
+      return _errResp('storage_response', seq, 'denied:plugin:storage', 'permission_denied');
+    }
+    final key = msg['key'] as String?;
+    if (key == null) {
+      return _errResp('storage_response', seq, 'missing key', 'invalid_input');
+    }
+    final deleted = storage.remove(key) != null ? 1 : 0;
+    return jsonEncode({'type': 'storage_response', 'seq': seq, 'deleted': deleted});
+  }
+
+  // ── network ────────────────────────────────────────────────────────────────
+
+  String _handleHttpRequest(Map<String, dynamic> msg, dynamic seq) {
+    if (!gate.isGranted('network:fetch')) {
+      return _errResp('http_response', seq, 'denied:network:fetch', 'permission_denied');
+    }
+    final callback = onNetworkFetch;
+    final Map<String, dynamic> resp;
+    if (callback != null) {
+      resp = callback(msg);
+    } else {
+      // Default stub: 403 with an explanatory body.
+      resp = {
+        'status': 403,
+        'headers': <String, dynamic>{},
+        'body': 'mock: no onNetworkFetch callback configured in MockSidecarHost',
+      };
+    }
+    return jsonEncode({
+      'type': 'http_response',
+      'seq': seq,
+      'status': resp['status'] ?? 200,
+      'headers': resp['headers'] ?? <String, dynamic>{},
+      'body': resp['body'] ?? '',
+    });
+  }
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  String _errResp(String type, dynamic seq, String error, String errorCode) =>
+      jsonEncode({'type': type, 'seq': seq, 'error': error, 'error_code': errorCode});
+}

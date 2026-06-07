@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -159,3 +160,278 @@ MockPortfolio _portfolio(Map<String, dynamic> p) => MockPortfolio(
       ),
   ],
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier 1 sidecar runner
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Run a Tier-1 (Python) sidecar plugin against the [MockSidecarHost].
+///
+/// [sidecarPath] is the path to the plugin's Python entry file (e.g.
+/// `plugin.py`) or to the directory that contains it.  The runner locates
+/// a `python3` or `python` executable, launches the sidecar, exchanges
+/// lifecycle messages, dispatches a `run` call, and prints the result.
+///
+/// [aiResponses] provides canned AI replies (cycled; the last entry repeats).
+/// [storageFixture] pre-seeds the in-memory storage store.
+Future<int> runSidecarTest({
+  required String sidecarPath,
+  List<String> grants = const [],
+  String? fixturePath,
+  String function = 'run',
+  Map<String, dynamic> args = const {},
+  List<String> aiResponses = const [],
+  Map<String, String> storageFixture = const {},
+  StringSink? out_,
+  StringSink? err_,
+}) async {
+  final o = out_ ?? stdout;
+  final e = err_ ?? stderr;
+
+  // ── Locate the plugin entry file ──────────────────────────────────────────
+  final pluginFile = _resolveSidecarEntry(sidecarPath);
+  if (pluginFile == null) {
+    e.writeln('test: cannot find plugin entry file at: $sidecarPath');
+    e.writeln('      Expected plugin.py (or __main__.py) in the given path.');
+    return 66;
+  }
+
+  // ── Locate Python interpreter ─────────────────────────────────────────────
+  final python = await _findPython();
+  if (python == null) {
+    e.writeln('test: python3 (or python) not found on PATH.');
+    e.writeln('      Install Python 3.9+ and ensure it is on your PATH.');
+    return 69;
+  }
+
+  // ── Build the mock host ───────────────────────────────────────────────────
+  final mockAi = aiResponses.isNotEmpty ? cannedResponses(aiResponses) : null;
+  final host = MockSidecarHost(
+    granted: grants,
+    onAiComplete: mockAi,
+    storage: Map<String, String>.of(storageFixture),
+  );
+
+  o.writeln(
+    'test(sidecar): ${pluginFile.path}  '
+    'grants=${grants.isEmpty ? "(none)" : grants.join(",")}',
+  );
+
+  // ── Spawn the sidecar process ─────────────────────────────────────────────
+  final process = await Process.start(
+    python,
+    [pluginFile.path],
+    workingDirectory: pluginFile.parent.path,
+    environment: {
+      ...Platform.environment,
+      // Ensure unbuffered output so NDJSON lines arrive immediately.
+      'PYTHONUNBUFFERED': '1',
+    },
+  );
+
+  // Collect stderr asynchronously — print it at the end.
+  final stderrBuf = StringBuffer();
+  process.stderr
+      .transform(const Utf8Decoder(allowMalformed: true))
+      .listen(stderrBuf.write);
+
+  final stdinSink = process.stdin;
+  int exitValue = 0;
+
+  try {
+    exitValue = await _runProtocol(
+      process: process,
+      stdinSink: stdinSink,
+      host: host,
+      function: function,
+      args: args,
+      o: o,
+      e: e,
+    );
+  } finally {
+    await stdinSink.flush().catchError((_) {});
+    await stdinSink.close().catchError((_) {});
+    await process.exitCode.timeout(
+      const Duration(seconds: 5),
+      onTimeout: () {
+        process.kill();
+        return -1;
+      },
+    );
+    if (stderrBuf.isNotEmpty) {
+      e.writeln('\n── Plugin stderr ──');
+      e.write(stderrBuf.toString());
+    }
+    // Print final storage state if non-empty.
+    if (host.storage.isNotEmpty) {
+      o.writeln('\n── Storage (after run) ──');
+      for (final entry in host.storage.entries) {
+        o.writeln('  ${entry.key} = ${entry.value}');
+      }
+    }
+  }
+
+  return exitValue;
+}
+
+/// Drive one request/response lifecycle over the sidecar stdio pipes.
+Future<int> _runProtocol({
+  required Process process,
+  required IOSink stdinSink,
+  required MockSidecarHost host,
+  required String function,
+  required Map<String, dynamic> args,
+  required StringSink o,
+  required StringSink e,
+}) async {
+  // The seq for our top-level call.
+  const callSeq = 1;
+
+  final lines = process.stdout
+      .transform(const Utf8Decoder(allowMalformed: true))
+      .transform(const LineSplitter());
+
+  // Completer that resolves when we get the result/error for callSeq.
+  final resultCompleter = Completer<Map<String, dynamic>>();
+
+  // We process stdout line by line.  Host calls from the plugin are answered
+  // inline; lifecycle messages are handled per their type.
+  bool ready = false;
+
+  final sub = lines.listen(
+    (line) {
+      if (line.isEmpty) return;
+
+      Map<String, dynamic> msg;
+      try {
+        msg = jsonDecode(line) as Map<String, dynamic>;
+      } catch (_) {
+        // Plugin emitted non-JSON (e.g. a print() debug line). Ignore.
+        return;
+      }
+
+      final type = msg['type'] as String?;
+
+      // ── Lifecycle ────────────────────────────────────────────────────────
+      if (type == 'ready') {
+        ready = true;
+        // Send our call.
+        stdinSink.writeln(jsonEncode({
+          'type': 'call',
+          'seq': callSeq,
+          'function': function,
+          'args': args,
+        }));
+        return;
+      }
+
+      if (type == 'result' && msg['seq'] == callSeq) {
+        resultCompleter.complete(msg);
+        return;
+      }
+
+      if (type == 'error' && msg['seq'] == callSeq) {
+        resultCompleter.complete(msg);
+        return;
+      }
+
+      if (type == 'event') {
+        // Plugin emitted an event — capture it, answer nothing.
+        return;
+      }
+
+      // ── Synchronous host calls ───────────────────────────────────────────
+      final response = host.handleLine(line);
+      if (response != null) {
+        stdinSink.writeln(response);
+      }
+    },
+    onDone: () {
+      if (!resultCompleter.isCompleted) {
+        resultCompleter.completeError(
+          StateError('sidecar exited without returning a result'),
+        );
+      }
+    },
+    onError: (Object err) {
+      if (!resultCompleter.isCompleted) {
+        resultCompleter.completeError(err);
+      }
+    },
+    cancelOnError: false,
+  );
+
+  try {
+    // Wait for result with a timeout.
+    final result = await resultCompleter.future.timeout(
+      const Duration(seconds: 30),
+      onTimeout: () => throw TimeoutException('plugin timed out after 30 s'),
+    );
+
+    // Send shutdown.
+    stdinSink.writeln(jsonEncode({'type': 'shutdown'}));
+
+    if (result['type'] == 'error') {
+      e.writeln('\n── Plugin error ──');
+      e.writeln('  code: ${result['error_code'] ?? 'unknown'}');
+      e.writeln('  message: ${result['error'] ?? result['message'] ?? '(no message)'}');
+      return 70;
+    }
+
+    // Success.
+    final data = result['data'];
+    o.writeln('\n── Declarative output ──');
+    o.writeln(const JsonEncoder.withIndent('  ').convert(data));
+    return 0;
+  } on TimeoutException catch (ex) {
+    e.writeln('test: ${ex.message}');
+    process.kill();
+    return 70;
+  } on StateError catch (ex) {
+    if (!ready) {
+      e.writeln('test: sidecar exited before sending "ready" — check stderr above.');
+    } else {
+      e.writeln('test: ${ex.message}');
+    }
+    return 70;
+  } finally {
+    await sub.cancel();
+  }
+}
+
+/// Find the Python entry file for [path].
+///
+/// Accepts a `.py` file directly or a directory containing `plugin.py` or
+/// `__main__.py`.
+File? _resolveSidecarEntry(String path) {
+  final f = File(path);
+  if (f.existsSync() && path.endsWith('.py')) return f;
+
+  final dir = Directory(path);
+  if (dir.existsSync()) {
+    for (final name in ['plugin.py', '__main__.py']) {
+      final candidate = File('${dir.path}/$name');
+      if (candidate.existsSync()) return candidate;
+    }
+  }
+  return null;
+}
+
+/// Return the path to a Python 3 interpreter, or null if none is on PATH.
+Future<String?> _findPython() async {
+  for (final candidate in ['python3', 'python']) {
+    try {
+      final result = await Process.run(candidate, ['--version']);
+      if (result.exitCode == 0) {
+        final version = (result.stdout as String).trim().isEmpty
+            ? (result.stderr as String).trim()
+            : (result.stdout as String).trim();
+        // Require Python 3.
+        if (version.contains('Python 3')) return candidate;
+      }
+    } catch (_) {
+      // Not on PATH — try next.
+    }
+  }
+  return null;
+}

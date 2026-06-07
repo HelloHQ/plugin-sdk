@@ -34,6 +34,34 @@ ERR_TIMEOUT = "timeout"
 TYPE_AI_COMPLETE = "ai_complete"
 TYPE_AI_RESPONSE = "ai_response"
 
+# Storage host-call protocol (plugin → host, synchronous, Tier 1 only).
+# Requires plugin:storage permission.
+#
+# Wire format — get:
+#   {"type":"storage_get","seq":N,"key":"…"}
+#   → {"type":"storage_response","seq":N,"value":"…"}   (or "value":null if absent)
+#   → {"type":"storage_response","seq":N,"error":"…","error_code":"…"}
+# Wire format — set:
+#   {"type":"storage_set","seq":N,"key":"…","value":"…"}
+#   → {"type":"storage_response","seq":N,"ok":true}
+# Wire format — delete:
+#   {"type":"storage_delete","seq":N,"key":"…"}
+#   → {"type":"storage_response","seq":N,"deleted":1}   (0 if key absent)
+TYPE_STORAGE_GET = "storage_get"
+TYPE_STORAGE_SET = "storage_set"
+TYPE_STORAGE_DELETE = "storage_delete"
+TYPE_STORAGE_RESPONSE = "storage_response"
+
+# Network host-call protocol (plugin → host, synchronous, Tier 1, Verified only).
+# Requires network:fetch permission.
+#
+# Wire format:
+#   {"type":"http_request","seq":N,"method":"GET","url":"…","headers":{},"body":"…"}
+#   → {"type":"http_response","seq":N,"status":200,"headers":{},"body":"…"}
+#   → {"type":"http_response","seq":N,"error":"…","error_code":"…"}
+TYPE_HTTP_REQUEST = "http_request"
+TYPE_HTTP_RESPONSE = "http_response"
+
 
 class PluginError(Exception):
     """Raise from a dispatch function to return a structured RPC error.

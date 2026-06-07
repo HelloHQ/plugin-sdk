@@ -52,18 +52,30 @@ class _TestCommand extends Command<int> {
   _TestCommand() {
     argParser
       ..addOption('wasm', help: 'Tier-2 plugin .wasm to run.')
+      ..addOption('sidecar',
+          help: 'Tier-1 Python plugin file or directory to run.')
       ..addMultiOption('grant', help: 'Permission id to grant (repeatable).')
       ..addOption('fixture', help: 'JSON fixture of portfolios/currencies.')
       ..addOption('input',
           help: 'Run input JSON.', defaultsTo: '{"function":"main","args":{}}')
-      ..addOption('sidecar')
-      ..addOption('bundle', help: 'WebView ui.zip to load.');
+      ..addMultiOption('ai-response',
+          help: 'Canned AI reply string (repeatable, cycles on exhaustion).')
+      ..addOption('bundle', help: 'WebView ui.zip to load (not yet supported).');
   }
 
   @override
   Future<int> run() async {
-    if (argResults?['sidecar'] != null || argResults?['bundle'] != null) {
-      stderr.writeln('test: only --wasm (Tier-2) is supported today.');
+    final sidecar = argResults?['sidecar'] as String?;
+    if (sidecar != null) {
+      return runSidecarTest(
+        sidecarPath: sidecar,
+        grants: (argResults?['grant'] as List<String>?) ?? const [],
+        fixturePath: argResults?['fixture'] as String?,
+        aiResponses: (argResults?['ai-response'] as List<String>?) ?? const [],
+      );
+    }
+    if (argResults?['bundle'] != null) {
+      stderr.writeln('test: --bundle (WebView) is not yet supported.');
       return 2;
     }
     return runTest(
