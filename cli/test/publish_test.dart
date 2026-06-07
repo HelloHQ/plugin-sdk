@@ -9,7 +9,19 @@ void main() {
   test('submit pushes to the authenticated user fork and opens an upstream PR',
       () async {
     final dir = Directory.systemTemp.createTempSync('hqplugin_publish_');
-    addTearDown(() => dir.deleteSync(recursive: true));
+    // Windows holds a directory handle briefly after Directory.current is
+    // restored, preventing immediate deletion. Retry with a short delay.
+    addTearDown(() async {
+      for (var attempt = 0; attempt < 5; attempt++) {
+        try {
+          dir.deleteSync(recursive: true);
+          return;
+        } catch (_) {
+          await Future.delayed(const Duration(milliseconds: 150));
+        }
+      }
+      dir.deleteSync(recursive: true); // final attempt — let it throw
+    });
 
     File(p.join(dir.path, 'manifest.json')).writeAsStringSync(jsonEncode({
       'id': 'com.example.summary',
@@ -100,7 +112,17 @@ void main() {
 
   test('submit stops when git commit fails', () async {
     final dir = Directory.systemTemp.createTempSync('hqplugin_publish_');
-    addTearDown(() => dir.deleteSync(recursive: true));
+    addTearDown(() async {
+      for (var attempt = 0; attempt < 5; attempt++) {
+        try {
+          dir.deleteSync(recursive: true);
+          return;
+        } catch (_) {
+          await Future.delayed(const Duration(milliseconds: 150));
+        }
+      }
+      dir.deleteSync(recursive: true);
+    });
 
     File(p.join(dir.path, 'manifest.json')).writeAsStringSync(jsonEncode({
       'id': 'com.example.summary',

@@ -258,6 +258,14 @@ jobs:
         run: bash scripts/fetch-wasmtime-libs.sh
         shell: bash
 
+      # The CLI build tests (test/build_test.dart, test/test_cmd_test.dart) invoke
+      # `cargo build --target wasm32-wasip1`. Cargo is pre-installed on GitHub
+      # runners but the wasm32-wasip1 target is not — add it so the tests pass
+      # instead of failing with exit code 101 (cargo: target not found).
+      - name: Install wasm32-wasip1 Rust target (for CLI build tests)
+        run: rustup target add wasm32-wasip1
+        shell: bash
+
       - name: dart pub get — mock-host
         run: dart pub get
         working-directory: mock-host
@@ -356,8 +364,15 @@ jobs:
             --grant read:portfolio_names
         shell: bash
 
-      # Tier-1 sidecar e2e: the CLI locates sdks/python automatically (PYTHONPATH),
-      # spawns the CPython plugin, and round-trips a plugin:storage call.
+      # Install the Python SDK so `from hellohq_plugin_sdk import ...` works inside
+      # the notes-keeper sidecar plugin. Without this the plugin exits immediately
+      # with ModuleNotFoundError and the CLI reports "exited before sending ready".
+      - name: Install Python SDK (for Tier-1 sidecar e2e)
+        run: pip install ./sdks/python
+        shell: bash
+
+      # Tier-1 sidecar e2e: spawns the CPython plugin via the CLI and
+      # round-trips a plugin:storage call.
       - name: Run notes-keeper through hqplugin test (Tier-1 sidecar)
         run: |
           dart run cli/bin/hqplugin.dart test \
