@@ -252,11 +252,11 @@ jobs:
         shell: bash
 
       # The CLI build tests (test/build_test.dart, test/test_cmd_test.dart) invoke
-      # `cargo build --target wasm32-wasip1`. Cargo is pre-installed on GitHub
-      # runners but the wasm32-wasip1 target is not — add it so the tests pass
-      # instead of failing with exit code 101 (cargo: target not found).
-      - name: Install wasm32-wasip1 Rust target (for CLI build tests)
-        run: rustup target add wasm32-wasip1
+      # `cargo build --target wasm32-unknown-unknown`. Cargo is pre-installed on
+      # GitHub runners but the wasm32-unknown-unknown target is not — add it so
+      # the tests pass instead of failing with exit code 101 (target not found).
+      - name: Install wasm32-unknown-unknown Rust target (for CLI build tests)
+        run: rustup target add wasm32-unknown-unknown
         shell: bash
 
       - name: dart pub get — mock-host
@@ -357,12 +357,11 @@ jobs:
             --grant read:portfolio_names
         shell: bash
 
-      # Install the Python SDK so `from hellohq_plugin_sdk import ...` works inside
-      # the notes-keeper sidecar plugin. Without this the plugin exits immediately
-      # with ModuleNotFoundError and the CLI reports "exited before sending ready".
-      - name: Install Python SDK (for Tier-1 sidecar e2e)
-        run: uv pip install --system ./sdks/python
-        shell: bash
+      # No explicit SDK install needed: the hqplugin CLI auto-discovers
+      # sdks/python by walking up from the plugin file and injects it into
+      # PYTHONPATH before spawning the sidecar process (see _locatePythonSdk in
+      # cli/lib/src/test_cmd.dart). A `uv pip install --system` here would install
+      # into a different Python than the one the sidecar spawns, so it cannot help.
 
       # Tier-1 sidecar e2e: spawns the CPython plugin via the CLI and
       # round-trips a plugin:storage call.

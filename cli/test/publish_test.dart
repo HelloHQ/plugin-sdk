@@ -12,15 +12,21 @@ void main() {
     // Windows holds a directory handle briefly after Directory.current is
     // restored, preventing immediate deletion. Retry with a short delay.
     addTearDown(() async {
-      for (var attempt = 0; attempt < 5; attempt++) {
+      for (var attempt = 0; attempt < 12; attempt++) {
         try {
           dir.deleteSync(recursive: true);
           return;
         } catch (_) {
-          await Future.delayed(const Duration(milliseconds: 150));
+          await Future.delayed(const Duration(milliseconds: 250));
         }
       }
-      dir.deleteSync(recursive: true); // final attempt — let it throw
+      // Best-effort: on Windows a CWD handle can linger several seconds.
+      // Temp dirs are cleaned by the OS on restart; don't fail the test.
+      if (Platform.isWindows) {
+        try { dir.deleteSync(recursive: true); } catch (_) {}
+      } else {
+        dir.deleteSync(recursive: true); // final attempt — let it throw
+      }
     });
 
     File(p.join(dir.path, 'manifest.json')).writeAsStringSync(jsonEncode({
@@ -113,15 +119,19 @@ void main() {
   test('submit stops when git commit fails', () async {
     final dir = Directory.systemTemp.createTempSync('hqplugin_publish_');
     addTearDown(() async {
-      for (var attempt = 0; attempt < 5; attempt++) {
+      for (var attempt = 0; attempt < 12; attempt++) {
         try {
           dir.deleteSync(recursive: true);
           return;
         } catch (_) {
-          await Future.delayed(const Duration(milliseconds: 150));
+          await Future.delayed(const Duration(milliseconds: 250));
         }
       }
-      dir.deleteSync(recursive: true);
+      if (Platform.isWindows) {
+        try { dir.deleteSync(recursive: true); } catch (_) {}
+      } else {
+        dir.deleteSync(recursive: true);
+      }
     });
 
     File(p.join(dir.path, 'manifest.json')).writeAsStringSync(jsonEncode({

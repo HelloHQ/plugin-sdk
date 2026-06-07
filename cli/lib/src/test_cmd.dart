@@ -429,7 +429,7 @@ String? _locatePythonSdk(Directory start) {
     var dir = Directory(origin);
     for (var i = 0; i < 8; i++) {
       final pkg = Directory('${dir.path}/sdks/python/hellohq_plugin_sdk');
-      if (pkg.existsSync()) return '${dir.path}/sdks/python';
+      if (pkg.existsSync()) return '${dir.absolute.path}/sdks/python';
       final parent = dir.parent;
       if (parent.path == dir.path) break;
       dir = parent;
