@@ -52,22 +52,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/AppData/Local/pip/Cache
-          key: pip-${{ matrix.os }}-py${{ matrix.python-version }}-${{ hashFiles('sdks/python/pyproject.toml') }}
-          restore-keys: pip-${{ matrix.os }}-py${{ matrix.python-version }}-
+      - name: Install SDK + dev dependencies
+        run: uv sync --group dev
 
-      - run: pip install -e .
-      - run: pip install pytest pytest-cov
-      - run: pytest --cov=hellohq_plugin_sdk --cov-report=term-missing
+      - name: Run tests
+        run: uv run pytest --cov=hellohq_plugin_sdk --cov-report=term-missing
 
   # ── Rust SDK — unit tests (all OS) ─────────────────────────────────────────
   rust-test:
@@ -233,7 +226,7 @@ jobs:
 
       # The CLI's sidecar tests (test/sidecar_test.dart) spawn a Python sidecar,
       # so Python must be available on the runner.
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.12'
 
@@ -316,7 +309,7 @@ jobs:
           sdk: '3.4'
 
       # Tier-1 sidecar e2e (below) spawns a Python plugin.
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.12'
 
@@ -368,7 +361,7 @@ jobs:
       # the notes-keeper sidecar plugin. Without this the plugin exits immediately
       # with ModuleNotFoundError and the CLI reports "exited before sending ready".
       - name: Install Python SDK (for Tier-1 sidecar e2e)
-        run: pip install ./sdks/python
+        run: uv pip install --system ./sdks/python
         shell: bash
 
       # Tier-1 sidecar e2e: spawns the CPython plugin via the CLI and
