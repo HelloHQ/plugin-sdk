@@ -1,8 +1,8 @@
 {
   "id": "hellohq.examples.portfolio-analyst",
   "name": "Portfolio AI Analyst",
-  "version": "0.1.0",
-  "description": "Agentic multi-portfolio analysis. Uses a tool-calling loop (Smolagents pattern) to examine each portfolio and generate a risk/concentration report.",
+  "version": "1.0.0",
+  "description": "Reads aggregated portfolio values and runs a two-step ai:inference reasoning loop to produce a plain-language analysis. Tier-1 Python sidecar with a React WebView UI.",
   "author": "HelloHQ",
   "author_url": "https://hellohq.io",
   "repo": "https://github.com/HelloHQ/plugin-sdk",
@@ -10,13 +10,15 @@
   "categories": ["finance", "ai"],
   "min_host_version": "2.0.0",
   "execution_mode": "sidecar",
-  "wasm_url": "",
-  "content_hash_sha256": "",
-  "ui_type": "declarative",
+  "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/portfolio-analyst-v1.0.0/plugin.py",
+  "content_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ui_type": "webview",
+  "ui_bundle_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/portfolio-analyst-v1.0.0/ui.zip",
+  "ui_bundle_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "entry_function": "run",
   "permissions": [
     { "id": "read:portfolio_names" },
-    { "id": "read:asset_count" },
+    { "id": "read:aggregated_values" },
     { "id": "ai:inference" }
   ]
 }

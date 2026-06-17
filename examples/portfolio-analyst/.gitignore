@@ -1,0 +1,5 @@
+# Build outputs (regenerate with ./build.sh)
+/ui.zip
+ui/node_modules
+ui/dist
+ui/.vite

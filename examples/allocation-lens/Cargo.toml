@@ -1,19 +1,27 @@
+# Compute half of the Allocation Lens WebView example. Built against the SDK's
+# `inference-quickstart` world (async `run`), because draining
+# `inference.complete`'s `stream<string>` yields and the canonical sync `guest`
+# cannot `.await`. The empty [workspace] table makes this its own workspace root
+# so it never joins a parent crate's build.
+[workspace]
+
 [package]
 name = "allocation_lens"
 version = "0.1.0"
 edition = "2021"
-description = "Finance AI Agent example — Asset Allocation Narrative (Tier 2, Rust)"
+description = "AI asset-allocation narrative — reference HelloHQ Tier-2 streaming-inference compute component (WebView example)."
 publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-hellohq-plugin-sdk = { path = "../../sdks/rust" }
-serde_json = "1"
+# The async streaming world needs wit-bindgen's `async` runtime; `no_std` is
+# kept via default-features = false + the dlmalloc allocator.
+wit-bindgen = { version = "0.58.0", default-features = false, features = ["macros", "async"] }
+dlmalloc = { version = "0.2", features = ["global"] }
 
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = true
 strip = true
-codegen-units = 1

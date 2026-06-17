@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<!--
+  FX Opportunity Advisor — WebView UI (Vue + Vite).
+
+  The compute half is a Tier-1 Python sidecar (../plugin.py). HelloHQ serves
+  this bundle under a strict CSP (script-src 'self'), so Vite is configured with
+  base "./" and modulePreload disabled — the built index.html references only
+  external module scripts (no inline <script>). The app talks to the sidecar
+  through window.HQBridge (typed via @hellohq/plugin-sdk).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FX Opportunity Advisor</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

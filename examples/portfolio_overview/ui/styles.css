@@ -1,0 +1,112 @@
+/*
+ * Portfolio Overview WebView UI styles.
+ *
+ * Uses HelloHQ theme variables (--hq-*) the host injects into the WebView, so
+ * the plugin follows the app's light/dark theme automatically. Avoid hard-coded
+ * colors; fall back values are provided only so the bundle is legible when
+ * opened outside the app (e.g. `hqplugin test`).
+ */
+
+:root {
+  --fallback-bg: #1a1a1a;
+  --fallback-surface: #242424;
+  --fallback-text: #e8e8e8;
+  --fallback-muted: #9a9a9a;
+  --fallback-border: #3a3a3a;
+  --fallback-primary: #4c8dff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--hq-font-sans, system-ui, sans-serif);
+  color: var(--hq-text, var(--fallback-text));
+  background: var(--hq-background, var(--fallback-bg));
+}
+
+.app {
+  padding: 16px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.count {
+  color: var(--hq-text-muted, var(--fallback-muted));
+  font-size: 0.85rem;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--hq-border, var(--fallback-border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--hq-surface, var(--fallback-surface));
+  border-bottom: 1px solid var(--hq-border, var(--fallback-border));
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.row .index {
+  color: var(--hq-text-muted, var(--fallback-muted));
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--hq-primary, var(--fallback-primary));
+  border-radius: 6px;
+  background: var(--hq-primary, var(--fallback-primary));
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.loading,
+.empty,
+.error {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--hq-text-muted, var(--fallback-muted));
+}
+
+.empty .title {
+  color: var(--hq-text, var(--fallback-text));
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.error {
+  color: var(--hq-danger, #ff6b6b);
+}

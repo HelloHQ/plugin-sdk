@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  Portfolio Summary — WebView UI (framework-agnostic, vanilla TypeScript).
+
+  The compute half is a Tier-1 Python sidecar (../plugin.py). HelloHQ serves
+  this bundle under a strict CSP (script-src 'self'), so the single external
+  module ./ui.js wires everything programmatically and talks to the sidecar
+  through window.HQBridge (typed via @hellohq/plugin-sdk).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portfolio Summary</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="app" class="app" aria-busy="true">
+      <div class="loading">Loading…</div>
+    </main>
+    <script type="module" src="./ui.js"></script>
+  </body>
+</html>

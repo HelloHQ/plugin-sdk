@@ -2,7 +2,7 @@
   "id": "com.hellohq.notes-keeper",
   "name": "Notes Keeper",
   "version": "1.0.0",
-  "description": "Persists a run counter and a free-text note using plugin:storage.",
+  "description": "Persists a run counter and a free-text note using plugin:storage. Tier-1 Python sidecar with a framework-agnostic WebView UI.",
   "author": "HelloHQ",
   "author_url": "https://hellohq.io",
   "repo": "https://github.com/HelloHQ/plugin-sdk",
@@ -12,7 +12,9 @@
   "execution_mode": "sidecar",
   "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/notes-keeper-v1.0.0/plugin.py",
   "content_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "ui_type": "declarative",
+  "ui_type": "webview",
+  "ui_bundle_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/notes-keeper-v1.0.0/ui.zip",
+  "ui_bundle_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "entry_function": "run",
   "permissions": [
     { "id": "plugin:storage" }

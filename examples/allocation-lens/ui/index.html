@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<!--
+  Allocation Lens — WebView UI (Svelte).
+
+  HelloHQ serves this bundle from a loopback origin under a strict CSP
+  (script-src 'self'), so there are NO inline scripts or handlers: the page
+  loads one external module (Vite's hashed entry) that mounts the Svelte app and
+  talks to the host through window.HQBridge (typed via @hellohq/plugin-sdk).
+  vite.config.ts disables modulePreload so Vite does not inline a preload script.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Allocation Lens</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

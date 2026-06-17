@@ -1,8 +1,14 @@
+# Compute half of the Portfolio Overview WebView example. Built for
+# wasm32-unknown-unknown, then wrapped into a component with
+# `wasm-tools component new` (see build.sh). The empty [workspace] table makes
+# this its own workspace root so it never joins a parent crate's build.
+[workspace]
+
 [package]
 name = "portfolio_overview"
 version = "0.1.0"
 edition = "2021"
-description = "Reference HelloHQ Tier-2 plugin, authored with the Rust SDK."
+description = "Reference HelloHQ Tier-2 compute component (WebView example), authored with the Rust SDK."
 publish = false
 
 [lib]

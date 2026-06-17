@@ -1,0 +1,9 @@
+# Build outputs (regenerate with ./build.sh)
+/target
+/allocation_lens.component.wasm
+/ui.zip
+ui/node_modules
+ui/dist
+ui/.svelte-kit
+ui/node_modules/.vite
+Cargo.lock

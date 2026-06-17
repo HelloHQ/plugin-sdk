@@ -1,0 +1,19 @@
+{
+  "name": "@hellohq/example-portfolio-summary-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebView UI (vanilla TypeScript) for the Portfolio Summary example plugin.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --outfile=dist/ui.js && cp index.html styles.css dist/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hellohq/plugin-sdk": "file:../../../sdks/js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "typescript": "^5.4.0"
+  }
+}

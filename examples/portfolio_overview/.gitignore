@@ -1,0 +1,7 @@
+# Build outputs (regenerate with ./build.sh)
+/target
+/portfolio_overview.component.wasm
+/ui.zip
+ui/node_modules
+ui/dist
+Cargo.lock

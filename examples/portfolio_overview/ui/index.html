@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  Portfolio Overview — WebView UI (framework-agnostic, vanilla TypeScript).
+
+  HelloHQ serves this bundle from a loopback origin under a strict CSP
+  (script-src 'self'), so there are NO inline scripts or handlers: the page
+  loads one external module (./ui.js) that wires everything up programmatically
+  and talks to the host through window.HQBridge (typed via @hellohq/plugin-sdk).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portfolio Overview</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="app" class="app" aria-busy="true">
+      <div class="loading">Loading…</div>
+    </main>
+    <script type="module" src="./ui.js"></script>
+  </body>
+</html>
