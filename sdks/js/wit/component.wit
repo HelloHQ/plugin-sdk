@@ -1,0 +1,32 @@
+// SDK-local supplementary build world — NOT part of the plugin-protocol SSOT.
+//
+// `jco componentize` builds against a single WIT world and eagerly processes
+// every interface that world imports. The canonical `hellohq-plugin` world
+// imports `inference`, whose streaming
+//   complete: func(..) -> result<stream<string>, api-error>
+// crashes componentize-js 0.21.0 / StarlingMonkey's embedding splicer
+// (`spidermonkey-embedding-splicer ... internal error: entered unreachable
+// code`) — WASI-0.3 `stream` types are not yet supported by the JS engine.
+//
+// This world imports the SAME canonical `hellohq:plugin/*@0.1.0` interfaces
+// MINUS `inference`. Interface identities are unchanged: a component built
+// against this world imports `hellohq:plugin/{types,workspace,storage,events,
+// log}@0.1.0`, exactly what the host implements and permission-gates for a Rust
+// guest. This mirrors the Rust SDK's split (its canonical `guest.run` is sync
+// and likewise cannot drain the stream; it ships a supplementary
+// `inference-quickstart` world for the async path).
+//
+// This file intentionally has NO `package` declaration — it inherits the
+// `hellohq:plugin@0.1.0` package from `hellohq-plugin.wit` in this directory.
+// When componentize-js gains `stream` support, JS plugins can build against the
+// canonical `hellohq-plugin` world directly and this file can be retired.
+
+world hellohq-plugin-component {
+  import types;
+  import workspace;
+  import storage;
+  import events;
+  import log;
+
+  export guest;
+}

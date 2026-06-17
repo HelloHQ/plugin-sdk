@@ -1,0 +1,19 @@
+{
+  "name": "@hellohq/example-component-quickstart-js",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tier-2 HelloHQ Component Model quickstart plugin (JS/TS), built with jco.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "dependencies": {
+    "@hellohq/plugin-sdk": "file:../../sdks/js"
+  },
+  "devDependencies": {
+    "@bytecodealliance/jco": "^1.24.1",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.4.0"
+  }
+}

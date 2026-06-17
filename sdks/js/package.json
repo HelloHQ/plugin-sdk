@@ -1,22 +1,48 @@
 {
   "name": "@hellohq/plugin-sdk",
   "version": "0.1.0",
-  "description": "SDK for building Tier 2 (Wasm / WebView) HelloHQ plugins in TypeScript.",
+  "description": "SDK for building Tier 2 HelloHQ plugins in TypeScript — Component Model (jco/componentize-js, hellohq:plugin@0.1.0) or a WebView UI.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "src"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./component": {
+      "types": "./dist/component.d.ts",
+      "default": "./dist/component.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "wit"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "gen:types": "jco guest-types wit/ -n hellohq-plugin -o src/generated --all-features",
+    "sync:wit": "./scripts/sync-wit.sh"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/HelloHQ/plugin-sdk.git",
     "directory": "sdks/js"
   },
-  "keywords": ["hellohq", "plugin", "wasm", "webview"],
+  "keywords": [
+    "hellohq",
+    "plugin",
+    "wasm",
+    "component-model",
+    "jco",
+    "componentize-js",
+    "webview"
+  ],
   "devDependencies": {
+    "@bytecodealliance/componentize-js": "^0.21.0",
+    "@bytecodealliance/jco": "^1.24.1",
     "typescript": "^5.4.0"
   }
 }
