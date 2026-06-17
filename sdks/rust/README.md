@@ -1,65 +1,135 @@
 # hellohq-plugin-sdk (Rust)
 
-Build Tier 2 (Wasm) HelloHQ plugins in Rust. Compiles to
-`wasm32-unknown-unknown`, runs in-process in the host via Wasmtime, starts in
-<50 ms, works on mobile.
+Build **Tier-2 HelloHQ plugins** as WebAssembly **components** against the
+canonical [`hellohq:plugin@0.1.0`](./wit/hellohq-plugin.wit) WIT. Compiles to
+`wasm32-unknown-unknown`, then `wasm-tools component new` wraps it into a
+Component Model component the host loads via Wasmtime — no JIT on iOS (Pulley),
+fast startup, mobile-friendly.
 
-```bash
-rustup target add wasm32-unknown-unknown
-cargo build --target wasm32-unknown-unknown --release
-```
+The host **implements and permission-gates every import**; an interface the
+plugin never calls is tree-shaken out of the built component and is therefore
+structurally unreachable.
+
+> This crate (`0.2.x`) targets the Component Model. It supersedes the legacy
+> core-module ABI (raw `wasm32-unknown-unknown` + a `{"method":…}` JSON
+> `hq_read` protocol) shipped in `0.1.x` — there are no consumers of the legacy
+> ABI.
+
+## Quickstart
 
 ```rust
-use hellohq_plugin_sdk::{plugin, host, ui, PluginError};
+#![no_std]
+extern crate alloc;
+use alloc::{vec::Vec, string::String, format};
+use hellohq_plugin_sdk::{hq, export_plugin, Plugin, PluginMetadata};
 
-plugin! {
-    fn run(_input: &[u8]) -> Result<Vec<u8>, PluginError> {
-        // Permission-gated read (needs `read:portfolio_names` in the manifest).
-        let portfolios = host::read_portfolio_names().unwrap_or_default();
-        let items = portfolios.iter().enumerate()
-            .map(|(i, p)| (format!("Portfolio {}", i + 1), p.name.clone()))
-            .collect();
-        Ok(ui::column(vec![
-            ui::heading(&format!("Portfolios ({})", portfolios.len())),
-            ui::key_value_list(items),
-        ]).to_bytes())
+// dlmalloc global allocator + trapping panic handler (keeps the component
+// free of any wasi import).
+hellohq_plugin_sdk::setup_guest!();
+
+struct MyPlugin;
+
+impl Plugin for MyPlugin {
+    fn init() {
+        hq::log::info("my-plugin starting");
+    }
+
+    fn run(_input: Vec<u8>) -> Result<Vec<u8>, String> {
+        let names = hq::workspace::read_portfolio_names().map_err(|e| e.message)?;
+        hq::storage::set("count", &[names.len() as u8]).map_err(|e| e.message)?;
+        hq::events::emit("scanned", b"ok").ok();
+        Ok(format!("{} portfolios", names.len()).into_bytes())
+    }
+
+    fn metadata() -> PluginMetadata {
+        PluginMetadata { id: "my-plugin".into(), version: "0.1.0".into() }
     }
 }
+
+export_plugin!(MyPlugin);
 ```
 
-A complete, host-validated example lives in
-[`examples/portfolio_overview`](../../examples/portfolio_overview).
+A complete, component-verified example is in
+[`examples/component-quickstart`](../../examples/component-quickstart).
 
-## What the SDK gives you
+## Build workflow
 
-| Module | Purpose |
+```bash
+# one-time
+rustup target add wasm32-unknown-unknown
+cargo install wasm-tools          # or: brew install wasm-tools  (>= 1.252)
+
+# build the core module, then wrap it into a component
+cargo build --release --target wasm32-unknown-unknown
+wasm-tools component new \
+  target/wasm32-unknown-unknown/release/my_plugin.wasm \
+  -o my_plugin.component.wasm
+
+# inspect the component's imports/exports
+wasm-tools component wit my_plugin.component.wasm
+```
+
+The crate must be a `cdylib` (`crate-type = ["cdylib"]`) so it produces a core
+module for `wasm-tools component new`.
+
+## API surface
+
+All under the `hq` module — each function maps 1:1 onto a `hellohq:plugin/*`
+import and returns `Result<…, ApiError>` (reads) where the host can deny.
+
+| Module | Functions |
 |---|---|
-| [`plugin!`] macro | Wires the `run` export — no pointers, no manual framing |
-| `host::*` | Typed, permission-gated reads (`read_portfolio_names`, `read_sheet_structure`, `read_asset_count`, `read_currency_rates`, `read_aggregated_values`) + `host::emit` for WebView push events |
-| `ui::*` | Builders for all 15 declarative components (column, heading, key-value-list, table, metric, button, select, badge-row, empty-state, …) |
+| `hq::workspace` | `read_portfolio_names`, `read_sheet_structure`, `read_asset_count`, `read_currency_rates`, `read_aggregated_values` |
+| `hq::storage` | `get`, `set`, `delete`, `clear`, `list_keys` |
+| `hq::events` | `emit(kind, payload)`, `emit_event(&PluginEvent)` |
+| `hq::log` | `trace`, `debug`, `info`, `warn`, `error`, `write(level, msg)` |
+| `hq::inference` | `complete(messages, opts) -> StreamReader<String>` (streaming), `collect(stream).await`, message builders `user`/`system`/`assistant` |
 
-## Linear-memory ABI
+Plus:
 
-The `plugin!` macro exports `run(ptr, len) -> i64` (packed `(ptr << 32) | len`),
-and the crate exports `alloc(len) -> ptr` plus the module `memory`. The host
-(`PluginWasmService`) writes the input into an `alloc` buffer, calls `run`, and
-reads the returned slice from `memory`. Data reads go through the
-`env.hq_read(ptr, len) -> i64` import; push events through
-`env.emit_event(i32,i32,i32,i32)`. The `host::*` functions wrap these — you
-never touch them directly.
+- **`Plugin`** trait (`init` / `run` / `metadata`) + the **`export_plugin!`**
+  macro that wires the canonical `hellohq:plugin/guest` exports.
+- **`setup_guest!`** — installs the `dlmalloc` global allocator + a trapping
+  panic handler (the `#![no_std]` recipe that keeps the component wasi-free).
+- Clean re-exports of the generated records/errors: `ApiError`, `PortfolioName`,
+  `CurrencyRate`, `SheetSummary`, `AssetCount`, `AggregatedSummary`,
+  `PluginEvent`, `ChatMessage`, `InferenceOpts`, `PluginMetadata`, `LogLevel`.
+- **`bindings`** — the raw `wit_bindgen`-generated module, an escape hatch if you
+  outgrow `hq::*`.
 
-This is the ABI the host actually implements. (The richer per-function surface
-in the [protocol WIT](https://github.com/HelloHQ/plugin-protocol) is the
-canonical *design*; the SDK maps it onto the host's single JSON `hq_read`
-dispatch.)
+## `#![no_std]`
+
+The SDK is `#![no_std]` (it re-exports `alloc`). Plugins are `#![no_std]` too;
+`setup_guest!` supplies the allocator + panic handler. This is why the built
+component imports only `hellohq:plugin/*` and never pulls in `wasi:*`.
+
+## Streaming inference
+
+`hq::inference::complete` returns a `stream<string>` of token deltas. Draining
+the stream **yields**, so it must run in an `async` context — and the canonical
+`guest.run` export is **sync**. To stream end to end, build against the
+`inference-quickstart` world (`wit/quickstart.wit`), whose `run` is an
+`async func`. See
+[`examples/component-quickstart/INFERENCE.md`](../../examples/component-quickstart/INFERENCE.md)
+for a working example.
+
+## Vendored WIT
+
+[`wit/hellohq-plugin.wit`](./wit/) is vendored from the SSOT,
+`HelloHQ/plugin-protocol`. Re-sync with `./scripts/sync-wit.sh`. See
+[`wit/README.md`](./wit/README.md). (A submodule would be cleaner long-term —
+tracked as a follow-up.)
 
 ## Testing
 
-The SDK's own unit tests (UI builders + ABI marshalling) run on the host arch:
+The SDK's own checks build on the host arch:
 
 ```bash
+cargo build --release   # builds the lib + bindings on host arch
 cargo test
 ```
 
-End-to-end validation — running an SDK-built plugin through the real host — is
-in the host repo: `test/unit/service/plugin_sdk_rust_test.dart`.
+Running a built component on the real host (`hellohq-wasm-runtime`) is a
+separate integration; the runtime's harnesses use narrow test worlds today.
+Building a valid, correctly-shaped component is the bar this SDK meets — see the
+example's `build.sh` output.

@@ -6,7 +6,7 @@ Mirrors HelloHQ/plugin-protocol/sidecar/{lifecycle,envelope}.schema.json.
 from __future__ import annotations
 
 #: The hellohq:plugin protocol version this SDK targets.
-PROTOCOL_VERSION = "1.0.0"
+PROTOCOL_VERSION = "0.1.0"
 
 # Lifecycle message types (carry a "type" field).
 TYPE_READY = "ready"

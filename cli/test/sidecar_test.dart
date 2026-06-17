@@ -56,7 +56,7 @@ def send(o):
 def readline():
     return sys.stdin.readline()
 
-send({"type": "ready", "protocol_version": "1.0.0"})
+send({"type": "ready", "protocol_version": "0.1.0"})
 while True:
     line = readline()
     if not line:
@@ -106,7 +106,7 @@ def send(o):
     sys.stdout.write(json.dumps(o) + "\\n")
     sys.stdout.flush()
 
-send({"type": "ready", "protocol_version": "1.0.0"})
+send({"type": "ready", "protocol_version": "0.1.0"})
 while True:
     line = sys.stdin.readline()
     if not line:

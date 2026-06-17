@@ -2,21 +2,33 @@
 name = "hellohq-plugin-sdk"
 version = "0.1.0"
 edition = "2021"
-description = "SDK for building Tier 2 (Wasm) HelloHQ plugins in Rust."
+description = "SDK for building Tier 2 HelloHQ plugins (WebAssembly Component Model, hellohq:plugin@0.1.0) in Rust."
 license = "Apache-2.0"
 repository = "https://github.com/HelloHQ/plugin-sdk"
-keywords = ["hellohq", "plugin", "wasm", "wasi"]
+keywords = ["hellohq", "plugin", "wasm", "component-model", "wasi"]
 categories = ["wasm"]
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# `rlib` so plugin crates depend on it as a normal library; the plugin crate
+# itself is the `cdylib` that becomes the core module fed to
+# `wasm-tools component new`.
+crate-type = ["rlib"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Guest-side Component Model bindings generator. The full `hellohq-plugin` world
+# imports the streaming `inference` interface (`stream<string>`), which needs
+# wit-bindgen's `async` runtime — but we keep `default-features = false` (no
+# std) plus only `macros` + `async`, so a guest stays `#![no_std]` and the built
+# component imports only `hellohq:plugin/*` (no `wasi:*`).
+wit-bindgen = { version = "0.58.0", default-features = false, features = ["macros", "async"] }
 
-# Build plugins for the Tier 2 target the host loads (no WASI imports):
+# Guest global allocator wired by the `setup_guest!` macro (re-exported).
+dlmalloc = { version = "0.2", features = ["global"] }
+
+# Build a plugin component:
 #   rustup target add wasm32-unknown-unknown
-#   cargo build --target wasm32-unknown-unknown --release
+#   cargo build --release --target wasm32-unknown-unknown
+#   wasm-tools component new target/wasm32-unknown-unknown/release/<crate>.wasm \
+#     -o <crate>.component.wasm
 #
-# The SDK's own unit tests run on the host arch: `cargo test`.
+# The SDK lib itself builds on the host arch (`cargo build --release`).

@@ -1,0 +1,143 @@
+// HelloHQ Plugin Protocol — Tier 2 ABI (WebAssembly Component Model + WASI 0.3)
+//
+// Canonical source of truth for the host <-> plugin contract, consumed by the
+// Rust/Go/JS/Python SDKs, the host FFI layer (hellohq-wasm-runtime), and the
+// registry CI (via `wit-bindgen` / `jco` / `cargo-component`).
+//
+// This is the **Component Model** contract the async runtime implements and
+// verifies end-to-end (both Cranelift and the no-JIT iOS Pulley backend):
+//   - capabilities split into focused, independently-gated interfaces
+//     (workspace / storage / events / log / inference);
+//   - `inference.complete` STREAMS token deltas (`stream<string>`);
+//   - `storage` is a real key-value capability;
+//   - outbound HTTP is the STANDARD `wasi:http` (replaces a bespoke
+//     `network:fetch`), host-gated app-side (origin allowlist + SSRF/H4-H5).
+//
+// Pre-1.0 (no external consumers yet) — breaking changes are allowed until this
+// stabilizes at 1.0.0; the earlier single-`host` draft it replaces had no users.
+//
+// The gate stays app-side: the host implements + permission-checks every import
+// (an interface absent from the world, or denied, is unreachable). `wasi:sockets`
+// and `wasi:filesystem` are deliberately NEVER imported — denial is structural.
+
+package hellohq:plugin@0.1.0;
+
+// ── Shared types ──────────────────────────────────────────────────────────────
+interface types {
+  // Gate denial, validation failure, or downstream error. Carries no secret,
+  // raw prompt/response, credential id, or request id (the AI-harness boundary
+  // rules). `code` is a stable machine token; `message` is safe to show the user.
+  record api-error {
+    code: string,      // "permission-denied" | "origin-blocked" |
+                       // "address-blocked" | "rate-limited" | "not-found"
+    message: string,
+  }
+
+  record portfolio-name { id: string, name: string }
+
+  record currency-rate {
+    id: string,        // ISO 4217, e.g. "USD"
+    name: string,
+    symbol: string,
+    rate: f64,         // units per 1 unit of the workspace base currency
+  }
+
+  record sheet-info { name: string, sections: list<string> }
+  record sheet-summary { portfolio-id: string, sheets: list<sheet-info> }
+
+  record category-count { category: string, count: u32 }
+  record asset-count { portfolio-id: string, count-by-category: list<category-count> }
+
+  record category-total { category: string, total: f64 }
+  record aggregated-summary { portfolio-id: string, totals: list<category-total> }
+}
+
+// ── Workspace reads (read-only, permission-gated per function) ──────────────
+// Read-only, permission-gated per function; `read-aggregated-values` requires
+// Verified trust + per-portfolio scope.
+interface workspace {
+  use types.{
+    api-error, portfolio-name, sheet-summary, asset-count,
+    currency-rate, aggregated-summary,
+  };
+
+  read-portfolio-names: func() -> result<list<portfolio-name>, api-error>;
+  read-sheet-structure: func(portfolio-id: string) -> result<sheet-summary, api-error>;
+  read-asset-count: func(portfolio-id: string) -> result<asset-count, api-error>;
+  read-currency-rates: func() -> result<list<currency-rate>, api-error>;
+  read-aggregated-values: func(portfolio-id: string) -> result<aggregated-summary, api-error>;
+
+  // write:external_output — RESERVED (no Tier-2 wiring yet); shape reserved so
+  // adding it later is non-breaking.
+  write-external-file: func(filename: string, content: list<u8>) -> result<_, api-error>;
+}
+
+// ── Key-value storage (plugin:storage) ───────────────────────────────────────
+// Host-keyed (plugin_id, key); per-plugin quota enforced host-side.
+interface storage {
+  use types.{api-error};
+
+  get:       func(key: string) -> result<option<list<u8>>, api-error>;
+  set:       func(key: string, value: list<u8>) -> result<_, api-error>;
+  delete:    func(key: string) -> result<_, api-error>;
+  clear:     func() -> result<_, api-error>;
+  list-keys: func() -> result<list<string>, api-error>;
+}
+
+// ── Push events (plugin → host; size + rate capped) ──────────────────────────
+// Plugin → host. Host applies a size + rate cap before forwarding.
+interface events {
+  use types.{api-error};
+  record plugin-event { kind: string, payload: list<u8> }
+  emit: func(event: plugin-event) -> result<_, api-error>;
+}
+
+// ── Logging (always available, never gated) ────────────────────────────────────
+interface log {
+  enum level { trace, debug, info, warn, error }
+  write: func(level: level, message: string);
+}
+
+// ── AI inference (STREAMING token deltas; routed through HQAuthProxy) ─────────
+// Routes through HQAuthProxy on the host's main isolate. Constrained
+// request/response, NOT direct model/provider access. No secret, key, raw
+// memory, credential id, or request id crosses this boundary. `complete` streams
+// the model's token deltas as `stream<string>` elements (one UTF-8 delta each).
+interface inference {
+  use types.{api-error};
+
+  record chat-message { role: string, content: string }   // role: system|user|assistant
+  record inference-opts { max-tokens: u32, temperature: option<f32> }
+
+  complete: func(messages: list<chat-message>, opts: inference-opts)
+    -> result<stream<string>, api-error>;
+}
+
+// ── Plugin exports ─────────────────────────────────────────────────────────
+interface guest {
+  record plugin-metadata { id: string, version: string }
+  init: func();
+  run: func(input: list<u8>) -> result<list<u8>, string>;
+  metadata: func() -> plugin-metadata;
+}
+
+// ── The world ──────────────────────────────────────────────────────────────────
+world hellohq-plugin {
+  // hellohq-custom capability imports (host-implemented + gated app-side)
+  import types;
+  import workspace;
+  import storage;
+  import events;
+  import log;
+  import inference;
+
+  // STANDARD WASI — outbound HTTP replaces the bespoke `network:fetch`. The host
+  // implements `wasi:http/handler.handle` and GATES it (origin allowlist + H4/H5
+  // SSRF). Imported by the world; the wasi:http@0.3 packages are vendored
+  // alongside the consuming toolchain (kept out of this file so the hellohq
+  // package validates standalone via `wasm-tools component wit wit/`). NEVER
+  // imported: wasi:sockets, wasi:filesystem (capability denial is structural).
+  //   import wasi:http/handler@0.3.x;
+
+  export guest;
+}

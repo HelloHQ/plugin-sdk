@@ -7,7 +7,7 @@ from hellohq_plugin_sdk import PluginError, UnsupportedFunction
 
 
 def test_protocol_version() -> None:
-    assert protocol.PROTOCOL_VERSION == "1.0.0"
+    assert protocol.PROTOCOL_VERSION == "0.1.0"
 
 
 def test_lifecycle_message_types() -> None:

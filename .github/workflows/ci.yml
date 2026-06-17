@@ -105,6 +105,14 @@ jobs:
             sdks/rust
             examples/allocation-lens
             examples/portfolio_overview
+            examples/component-quickstart
+            examples/component-quickstart/inference
+
+      - name: Install wasm-tools (Component Model toolchain)
+        run: |
+          curl -L https://github.com/bytecodealliance/wasm-tools/releases/download/v1.252.0/wasm-tools-1.252.0-x86_64-linux.tar.gz \
+            | tar xz -C /tmp
+          echo "/tmp/wasm-tools-1.252.0-x86_64-linux" >> "$GITHUB_PATH"
 
       - name: Build SDK (wasm32)
         run: cargo build --target wasm32-unknown-unknown --release
@@ -117,6 +125,26 @@ jobs:
       - name: Build portfolio_overview example
         run: cargo build --target wasm32-unknown-unknown --release
         working-directory: examples/portfolio_overview
+
+      # ── Component Model: build the quickstart examples to components and
+      #    assert their shape (canonical hellohq:plugin@0.1.0, no stray wasi).
+      - name: Build component-quickstart (sync) -> component
+        working-directory: examples/component-quickstart
+        run: |
+          ./build.sh
+          wit=$(wasm-tools component wit component_quickstart.component.wasm)
+          echo "$wit"
+          echo "$wit" | grep -q 'export hellohq:plugin/guest@0.1.0;' || { echo "missing guest export"; exit 1; }
+          if echo "$wit" | grep -qi 'wasi:'; then echo "stray wasi import"; exit 1; fi
+
+      - name: Build component-quickstart (streaming inference) -> component
+        working-directory: examples/component-quickstart/inference
+        run: |
+          ./build.sh
+          wit=$(wasm-tools component wit component_quickstart_inference.component.wasm)
+          echo "$wit"
+          echo "$wit" | grep -q 'import hellohq:plugin/inference@0.1.0;' || { echo "missing inference import"; exit 1; }
+          if echo "$wit" | grep -qi 'wasi:'; then echo "stray wasi import"; exit 1; fi
 
       # Upload the reference wasm for the e2e matrix jobs.
       - uses: actions/upload-artifact@v4

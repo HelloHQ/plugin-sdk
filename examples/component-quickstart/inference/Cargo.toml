@@ -1,0 +1,24 @@
+# Streaming-inference quickstart: built against the SDK's `inference-quickstart`
+# world (async `run`). Separate crate from the sync quickstart because it
+# exports a different world.
+[workspace]
+
+[package]
+name = "component-quickstart-inference"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The async streaming world needs wit-bindgen's `async` runtime; `no_std` is
+# kept via default-features = false + the dlmalloc allocator.
+wit-bindgen = { version = "0.58.0", default-features = false, features = ["macros", "async"] }
+dlmalloc = { version = "0.2", features = ["global"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

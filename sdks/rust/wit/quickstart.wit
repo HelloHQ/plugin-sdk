@@ -1,0 +1,34 @@
+package hellohq:plugin@0.1.0;
+
+// SDK-local supplementary worlds in the canonical `hellohq:plugin` package.
+// NOT part of the plugin-protocol SSOT — these exist only to give SDK examples
+// a narrower import surface and (for inference) an async `run` export.
+//
+// The interfaces (`workspace`, `storage`, …) come from `hellohq-plugin.wit`,
+// which `wasm-tools component wit wit/` resolves alongside this file.
+
+// Sync quickstart: the workspace/storage/events/log capabilities a typical
+// headless plugin uses, with the canonical sync `guest` export. Building
+// against this world (instead of the full `hellohq-plugin`) means the component
+// never even references `inference`, so the dependency tree stays minimal.
+world quickstart {
+  import types;
+  import workspace;
+  import storage;
+  import events;
+  import log;
+
+  export guest;
+}
+
+// Inference quickstart: drives the streaming `inference.complete` import. Its
+// `run` is an `async func` because draining the returned `stream<string>`
+// yields — the canonical `guest.run` is sync and cannot `.await`. A plugin that
+// needs streaming exports this `run` instead of the `guest` interface.
+world inference-quickstart {
+  import types;
+  import log;
+  import inference;
+
+  export run: async func(input: list<u8>) -> result<list<u8>, string>;
+}

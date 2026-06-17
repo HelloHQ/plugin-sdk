@@ -1,6 +1,8 @@
 # Rust
 /sdks/rust/target/
 /examples/*/target/
+# nested example crates (e.g. examples/component-quickstart/inference/)
+**/target/
 Cargo.lock
 
 # Python

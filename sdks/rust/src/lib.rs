@@ -1,531 +1,173 @@
-//! HelloHQ Tier 2 (Wasm) plugin SDK for Rust.
+// SPDX-License-Identifier: Apache-2.0
+//
+//! HelloHQ Tier-2 **Component Model** plugin SDK for Rust.
 //!
-//! Write a HelloHQ plugin without touching raw pointers. The [`plugin!`] macro
-//! wires the linear-memory ABI the host actually calls; [`host`] gives typed,
-//! permission-gated data reads; [`ui`] builds the declarative UI tree the host
-//! renders natively.
+//! Build a HelloHQ plugin as a WebAssembly **component** against the canonical
+//! `hellohq:plugin@0.1.0` WIT (vendored in `wit/`). The host implements and
+//! permission-gates every import; an interface absent from the built component
+//! (tree-shaken away because the plugin never calls it) is structurally
+//! unreachable.
+//!
+//! This crate supersedes the legacy core-module ABI (raw
+//! `wasm32-unknown-unknown` + a `{"method":…}` JSON `hq_read` protocol). There
+//! are no consumers of the legacy ABI; this is the path forward.
+//!
+//! # Writing a plugin
 //!
 //! ```ignore
-//! use hellohq_plugin_sdk::{plugin, host, ui, PluginError};
+//! #![no_std]
+//! extern crate alloc;
+//! use alloc::{vec::Vec, string::String, format};
+//! use hellohq_plugin_sdk::{hq, export_plugin, Plugin, PluginMetadata};
 //!
-//! plugin! {
-//!     fn run(_input: &[u8]) -> Result<Vec<u8>, PluginError> {
-//!         let portfolios = host::read_portfolio_names().unwrap_or_default();
-//!         let items = portfolios.iter().enumerate()
-//!             .map(|(i, p)| (format!("Portfolio {}", i + 1), p.name.clone()))
-//!             .collect();
-//!         Ok(ui::column(vec![
-//!             ui::heading(&format!("Portfolios ({})", portfolios.len())),
-//!             ui::key_value_list(items),
-//!         ]).to_bytes())
+//! // Required once per guest crate: panic handler + global allocator.
+//! hellohq_plugin_sdk::setup_guest!();
+//!
+//! struct MyPlugin;
+//!
+//! impl Plugin for MyPlugin {
+//!     fn init() {
+//!         hq::log::info("my-plugin starting");
+//!     }
+//!
+//!     fn run(_input: Vec<u8>) -> Result<Vec<u8>, String> {
+//!         let names = hq::workspace::read_portfolio_names()
+//!             .map_err(|e| e.message)?;
+//!         hq::storage::set("last-count", &[names.len() as u8])
+//!             .map_err(|e| e.message)?;
+//!         hq::events::emit("scanned", b"ok").ok();
+//!         Ok(format!("{} portfolios", names.len()).into_bytes())
+//!     }
+//!
+//!     fn metadata() -> PluginMetadata {
+//!         PluginMetadata { id: "my-plugin".into(), version: "0.1.0".into() }
 //!     }
 //! }
+//!
+//! export_plugin!(MyPlugin);
 //! ```
 //!
-//! ## ABI (matches the host's `PluginWasmService`)
-//! - Exports: `memory`, `alloc(i32) -> i32`, `run(i32, i32) -> i64`
-//!   (packed `(ptr << 32) | len`).
-//! - Imports: `env.hq_read(i32, i32) -> i64`, `env.emit_event(i32,i32,i32,i32)`.
+//! Build it:
 //!
-//! Build for the host:
 //! ```bash
-//! cargo build --target wasm32-unknown-unknown --release
+//! rustup target add wasm32-unknown-unknown
+//! cargo build --release --target wasm32-unknown-unknown
+//! wasm-tools component new \
+//!   target/wasm32-unknown-unknown/release/my_plugin.wasm \
+//!   -o my_plugin.component.wasm
 //! ```
+//!
+//! # `no_std`
+//!
+//! The SDK is `#![no_std]` and re-exports `alloc`. A guest crate provides its
+//! own `#[global_allocator]` and `#[panic_handler]`; the [`setup_guest!`] macro
+//! wires the proven `dlmalloc` + `wasm32::unreachable()` recipe so the built
+//! component imports only `hellohq:plugin/*` (no `wasi:*`).
+//!
+//! # Streaming inference
+//!
+//! [`hq::inference::complete`] returns the raw `stream<string>` of token
+//! deltas. Draining the stream **yields**, so it must happen inside an `async`
+//! context. The canonical `guest` export (`run`) is a plain sync function, so
+//! the sync path can start a completion but cannot drain it from `run`. For the
+//! full streaming experience, build against the narrower
+//! **`inference-quickstart`** world (`wit/quickstart.wit`), whose `run` is an
+//! `async func` — see `examples/component-quickstart/INFERENCE.md`. The
+//! [`hq::inference::collect`] helper drains a stream to a `String`.
 
+#![no_std]
 #![allow(clippy::missing_safety_doc)]
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+extern crate alloc;
 
-/// The protocol version this SDK targets (see `HelloHQ/plugin-protocol`).
-pub const PROTOCOL_VERSION: &str = "1.0.0";
+/// The protocol version this SDK targets: the `hellohq:plugin@0.1.0` WIT package
+/// it binds against and the Tier-1 sidecar handshake value. Pre-stable (the
+/// protocol was reset to 0.1.0 — no consumers yet). Kept in sync across the
+/// Python/JS/Go SDKs by CI's `version-consistency` job.
+pub const PROTOCOL_VERSION: &str = "0.1.0";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Linear-memory ABI
+// Generated bindings (canonical `hellohq:plugin@0.1.0`, full world)
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Host imports. `hq_read` answers a JSON data request; `emit_event` pushes an
-// event to the plugin's WebView (no-op in declarative/headless mode).
 //
-// Only real on wasm32; native builds (the SDK's own `cargo test`) get stubs so
-// the crate links — the host functions are unreachable off-target.
-#[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "env")]
-extern "C" {
-    fn hq_read(req_ptr: i32, req_len: i32) -> i64;
-    fn emit_event(name_ptr: i32, name_len: i32, payload_ptr: i32, payload_len: i32);
+// `generate_all` pulls in the transitively-used `types` interface. The streaming
+// `inference` import requires wit-bindgen's `async` runtime; the SDK depends on
+// wit-bindgen with `features = ["macros", "async"]`, `default-features = false`
+// (see Cargo.toml) so the guest stays `no_std`.
+//
+// `pub` so author crates can reach the raw bindings if they outgrow the
+// ergonomic `hq` wrappers (escape hatch). Most plugins never touch this module.
+pub mod bindings {
+    wit_bindgen::generate!({
+        path: "wit",
+        world: "hellohq-plugin",
+        generate_all,
+        // Make the generated export macro public so `export_plugin!` (in the
+        // crate root module) can invoke it. `default_bindings_module` points the
+        // macro's type lookups back at this module so it resolves correctly when
+        // invoked from the author crate.
+        pub_export_macro: true,
+        default_bindings_module: "hellohq_plugin_sdk::bindings",
+    });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn hq_read(_req_ptr: i32, _req_len: i32) -> i64 {
-    panic!("hq_read is only available inside the Wasm host");
+// Re-export the generated record/error types under clean, stable names so
+// authors `use hellohq_plugin_sdk::{ApiError, PortfolioName, …}` rather than
+// reaching into `bindings::*`.
+pub use bindings::exports::hellohq::plugin::guest::PluginMetadata;
+pub use bindings::hellohq::plugin::events::PluginEvent;
+pub use bindings::hellohq::plugin::inference::{ChatMessage, InferenceOpts};
+pub use bindings::hellohq::plugin::log::Level as LogLevel;
+pub use bindings::hellohq::plugin::types::{
+    AggregatedSummary, ApiError, AssetCount, CategoryCount, CategoryTotal, CurrencyRate,
+    PortfolioName, SheetInfo, SheetSummary,
+};
+
+mod plugin;
+pub use plugin::Plugin;
+
+pub mod hq;
+
+/// Re-export of `alloc` so the `export_plugin!` macro can reference
+/// `$crate::__alloc::{vec::Vec, string::String}` from the author crate (which
+/// may not declare its own `extern crate alloc`).
+#[doc(hidden)]
+pub mod __alloc {
+    pub use alloc::string;
+    pub use alloc::vec;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn emit_event(_: i32, _: i32, _: i32, _: i32) {
-    panic!("emit_event is only available inside the Wasm host");
-}
-
-fn alloc_impl(len: i32) -> i32 {
-    let mut buf = Vec::<u8>::with_capacity(len.max(0) as usize);
-    let ptr = buf.as_mut_ptr() as i32;
-    core::mem::forget(buf);
-    ptr
-}
-
-/// Allocate `len` bytes the host can write into; returns the pointer.
+/// Wire the guest-side runtime requirements for a `wasm32-unknown-unknown`
+/// component: a `dlmalloc` `#[global_allocator]` and a `#[panic_handler]` that
+/// traps. This is the proven recipe that keeps the built component free of any
+/// `wasi:*` imports.
 ///
-/// A leaking bump-style allocator: the module instance is one-shot per run, so
-/// buffers are reclaimed when the instance is dropped. The host calls this to
-/// place `run`'s input and each `hq_read` response. Exported only on wasm.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn alloc(len: i32) -> i32 {
-    alloc_impl(len)
-}
-
-/// Pack a `(ptr, len)` pair into the `i64` the host reads back.
-pub fn pack(ptr: i32, len: i32) -> i64 {
-    (((ptr as u64) << 32) | (len as u32 as u64)) as i64
-}
-
-fn read_mem(ptr: i32, len: i32) -> Vec<u8> {
-    if ptr <= 0 || len <= 0 {
-        return Vec::new();
-    }
-    unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize).to_vec() }
-}
-
-fn write_mem(bytes: &[u8]) -> i32 {
-    let ptr = alloc_impl(bytes.len() as i32);
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
-    }
-    ptr
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Errors
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Error a plugin can return from `run`.
-#[derive(Debug, Clone)]
-pub enum PluginError {
-    InvalidInput(String),
-    ExecutionFailed(String),
-    UnsupportedFunction(String),
-}
-
-impl core::fmt::Display for PluginError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            PluginError::InvalidInput(m) => write!(f, "invalid input: {m}"),
-            PluginError::ExecutionFailed(m) => write!(f, "execution failed: {m}"),
-            PluginError::UnsupportedFunction(m) => write!(f, "unsupported function: {m}"),
-        }
-    }
-}
-
-/// Error returned by a [`host`] data read.
-#[derive(Debug, Clone)]
-pub enum HostError {
-    /// The permission gate denied the read (`error: "denied:<perm>"`).
-    Denied(String),
-    /// The host did not recognise the request method.
-    Unknown(String),
-    /// Malformed response, or the data did not match the expected shape.
-    Decode(String),
-}
-
-impl core::fmt::Display for HostError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            HostError::Denied(p) => write!(f, "permission denied: {p}"),
-            HostError::Unknown(m) => write!(f, "unknown host method: {m}"),
-            HostError::Decode(m) => write!(f, "decode error: {m}"),
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Host API — typed, permission-gated reads over the `hq_read` JSON protocol
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A portfolio id + display name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortfolioName {
-    pub id: String,
-    pub name: String,
-}
-
-/// A workspace currency and its exchange rate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CurrencyRate {
-    pub id: String,
-    pub name: String,
-    pub symbol: String,
-    pub rate: f64,
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AI inference types (v2 feature — requires `ai:inference` permission)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A single message in an AI conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiMessage {
-    pub role: String,
-    pub content: String,
-}
-
-impl AiMessage {
-    pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
-    }
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: content.into() }
-    }
-}
-
-/// Parameters for `host::ai_complete`.
-#[derive(Debug, Clone, Serialize)]
-pub struct InferenceOpts {
-    pub max_tokens: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-}
-
-impl Default for InferenceOpts {
-    fn default() -> Self {
-        Self { max_tokens: 512, temperature: None }
-    }
-}
-
-/// The response from `host::ai_complete`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct InferenceResponse {
-    pub content: String,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub model: String,
-}
-
-/// Typed host reads. Each requires the matching manifest permission; a denied
-/// read returns [`HostError::Denied`]. Data shapes mirror the host's
-/// `PluginSyncReader` JSON.
-pub mod host {
-    use super::*;
-
-    // Internal: serialize req to bytes, call hq_read, parse the envelope.
-    fn send_request_bytes(bytes: &[u8]) -> Result<Value, HostError> {
-        let req_ptr = write_mem(bytes);
-        let packed = unsafe { hq_read(req_ptr, bytes.len() as i32) };
-        let resp_ptr = ((packed >> 32) & 0xFFFF_FFFF) as i32;
-        let resp_len = (packed & 0xFFFF_FFFF) as i32;
-        let resp = read_mem(resp_ptr, resp_len);
-
-        let v: Value =
-            serde_json::from_slice(&resp).map_err(|e| HostError::Decode(e.to_string()))?;
-        if v.get("ok").and_then(Value::as_bool) == Some(true) {
-            Ok(v.get("data").cloned().unwrap_or(Value::Null))
-        } else {
-            let err = v.get("error").and_then(Value::as_str).unwrap_or("error");
-            if let Some(perm) = err.strip_prefix("denied:") {
-                Err(HostError::Denied(perm.to_string()))
-            } else if let Some(m) = err.strip_prefix("unknown_method:") {
-                Err(HostError::Unknown(m.to_string()))
-            } else {
-                Err(HostError::Decode(err.to_string()))
-            }
-        }
-    }
-
-    /// Low-level escape hatch: send a raw request and get the `data` value back.
-    pub fn read_raw(method: &str, portfolio_id: Option<&str>) -> Result<Value, HostError> {
-        let mut req = json!({ "method": method });
-        if let Some(pid) = portfolio_id {
-            req["portfolio_id"] = json!(pid);
-        }
-        send_request_bytes(&serde_json::to_vec(&req).unwrap())
-    }
-
-    fn read_typed<T: DeserializeOwned>(
-        method: &str,
-        portfolio_id: Option<&str>,
-    ) -> Result<T, HostError> {
-        let data = read_raw(method, portfolio_id)?;
-        serde_json::from_value(data).map_err(|e| HostError::Decode(e.to_string()))
-    }
-
-    /// `read:portfolio_names` — every portfolio's id + name.
-    pub fn read_portfolio_names() -> Result<Vec<PortfolioName>, HostError> {
-        read_typed("read:portfolio_names", None)
-    }
-
-    /// `read:sheet_structure` — sheet/section/item names (never values).
-    /// Pass a `portfolio_id` to scope to one portfolio.
-    pub fn read_sheet_structure(portfolio_id: Option<&str>) -> Result<Value, HostError> {
-        read_raw("read:sheet_structure", portfolio_id)
-    }
-
-    /// `read:asset_count` — item counts split by asset/debt.
-    pub fn read_asset_count(portfolio_id: Option<&str>) -> Result<Value, HostError> {
-        read_raw("read:asset_count", portfolio_id)
-    }
-
-    /// `read:currency_rates` — workspace currencies and rates.
-    pub fn read_currency_rates() -> Result<Vec<CurrencyRate>, HostError> {
-        read_typed("read:currency_rates", None)
-    }
-
-    /// `read:aggregated_values` — per-currency portfolio totals (Verified tier).
-    pub fn read_aggregated_values(portfolio_id: Option<&str>) -> Result<Value, HostError> {
-        read_raw("read:aggregated_values", portfolio_id)
-    }
-
-    /// `ai:complete` — route messages through the host AI backend.
-    ///
-    /// The plugin never holds API keys; the host proxies through HQAuthProxy.
-    /// Requires the `ai:inference` manifest permission (v2 feature).
-    pub fn ai_complete(
-        messages: Vec<AiMessage>,
-        opts: InferenceOpts,
-    ) -> Result<InferenceResponse, HostError> {
-        let req = json!({
-            "method": "ai:complete",
-            "messages": messages,
-            "opts": opts,
-        });
-        let data = send_request_bytes(&serde_json::to_vec(&req).unwrap())?;
-        serde_json::from_value(data).map_err(|e| HostError::Decode(e.to_string()))
-    }
-
-    /// Push an event to the plugin's WebView. No-op in declarative/headless mode.
-    pub fn emit(name: &str, payload: &[u8]) {
-        let name_ptr = write_mem(name.as_bytes());
-        let payload_ptr = write_mem(payload);
-        unsafe {
-            emit_event(name_ptr, name.len() as i32, payload_ptr, payload.len() as i32);
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Declarative UI builder — the 15 component types the host renders
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A declarative UI node. Build trees with the [`ui`] helpers and call
-/// [`View::to_bytes`] to return them from `run`.
-#[derive(Debug, Clone)]
-pub struct View(pub Value);
-
-impl View {
-    /// Serialize to the JSON bytes the host expects from `run`.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.0).unwrap()
-    }
-    /// The underlying JSON value.
-    pub fn into_value(self) -> Value {
-        self.0
-    }
-}
-
-/// Builders for the declarative component schema (see
-/// `docs/plugin/04_ui-declarative.md`).
-pub mod ui {
-    use super::*;
-
-    fn container(children: Vec<View>, kind: &str) -> View {
-        View(json!({
-            "type": kind,
-            "children": children.into_iter().map(|c| c.0).collect::<Vec<_>>(),
-        }))
-    }
-
-    pub fn column(children: Vec<View>) -> View {
-        container(children, "column")
-    }
-    pub fn row(children: Vec<View>) -> View {
-        container(children, "row")
-    }
-    pub fn section(title: &str, children: Vec<View>) -> View {
-        View(json!({
-            "type": "section",
-            "title": title,
-            "children": children.into_iter().map(|c| c.0).collect::<Vec<_>>(),
-        }))
-    }
-    pub fn heading(text: &str) -> View {
-        View(json!({ "type": "heading", "text": text }))
-    }
-    pub fn text(s: &str) -> View {
-        View(json!({ "type": "text", "text": s }))
-    }
-    pub fn divider() -> View {
-        View(json!({ "type": "divider" }))
-    }
-    pub fn loading() -> View {
-        View(json!({ "type": "loading" }))
-    }
-
-    /// A label→value list. `items` is `(label, value)` pairs.
-    pub fn key_value_list(items: Vec<(String, String)>) -> View {
-        let items: Vec<Value> = items
-            .into_iter()
-            .map(|(label, value)| json!({ "label": label, "value": value }))
-            .collect();
-        View(json!({ "type": "key-value-list", "items": items }))
-    }
-
-    /// A metric tile. `delta` is an optional signed change string.
-    pub fn metric(label: &str, value: &str, delta: Option<&str>) -> View {
-        let mut v = json!({ "type": "metric", "label": label, "value": value });
-        if let Some(d) = delta {
-            v["delta"] = json!(d);
-        }
-        View(v)
-    }
-
-    /// A table. `columns` are header labels; `rows` are cell-string rows.
-    pub fn table(columns: Vec<&str>, rows: Vec<Vec<String>>) -> View {
-        View(json!({
-            "type": "table",
-            "columns": columns.iter().map(|c| json!({ "label": c })).collect::<Vec<_>>(),
-            "rows": rows,
-        }))
-    }
-
-    /// A button. `on_tap` is `(function, args)` dispatched back to `run`.
-    pub fn button(label: &str, function: &str, args: Value) -> View {
-        View(json!({
-            "type": "button",
-            "label": label,
-            "on-tap": { "function": function, "args": args },
-        }))
-    }
-
-    /// A dropdown. `options` are `(value, label)`; selection re-invokes `run`
-    /// with `selected_value` injected into `args`.
-    pub fn select(options: Vec<(String, String)>, function: &str) -> View {
-        let options: Vec<Value> = options
-            .into_iter()
-            .map(|(value, label)| json!({ "value": value, "label": label }))
-            .collect();
-        View(json!({
-            "type": "select",
-            "options": options,
-            "action": { "function": function, "args": {} },
-        }))
-    }
-
-    /// A row of coloured badges. `badges` is `(label, color)`.
-    pub fn badge_row(badges: Vec<(String, String)>) -> View {
-        let badges: Vec<Value> = badges
-            .into_iter()
-            .map(|(label, color)| json!({ "label": label, "color": color }))
-            .collect();
-        View(json!({ "type": "badge-row", "badges": badges }))
-    }
-
-    pub fn empty_state(title: &str, description: Option<&str>) -> View {
-        let mut v = json!({ "type": "empty-state", "title": title });
-        if let Some(d) = description {
-            v["description"] = json!(d);
-        }
-        View(v)
-    }
-
-    /// A chart. `kind` is e.g. "line"/"bar"; `series` is host-schema JSON.
-    pub fn chart(kind: &str, series: Value) -> View {
-        View(json!({ "type": "chart", "chart_type": kind, "series": series }))
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Entry-point macro
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Wire a safe `run(&[u8]) -> Result<Vec<u8>, PluginError>` into the host ABI.
+/// Call this exactly once at the crate root of a plugin:
 ///
-/// Generates the exported `run(ptr, len) -> i64`: reads the input from guest
-/// memory, calls your function, writes the output, returns the packed pointer.
-/// On error it returns a declarative `empty-state` describing the failure so the
-/// pane degrades gracefully instead of trapping.
+/// ```ignore
+/// #![no_std]
+/// extern crate alloc;
+/// hellohq_plugin_sdk::setup_guest!();
+/// ```
+///
+/// Plugins that need their own allocator/panic handler can skip this and supply
+/// them directly; the only requirement is that the final component is `no_std`
+/// and pulls in no `wasi` imports.
 #[macro_export]
-macro_rules! plugin {
-    (fn run($input:ident: &[u8]) -> Result<Vec<u8>, $err:ty> $body:block) => {
-        #[no_mangle]
-        pub extern "C" fn run(ptr: i32, len: i32) -> i64 {
-            // The author's body becomes a plain fn so the `block` metavariable
-            // sits in fn-body position (closures with a return type won't accept
-            // a metavariable there directly).
-            fn __hq_run($input: &[u8]) -> ::core::result::Result<::std::vec::Vec<u8>, $err> $body
+macro_rules! setup_guest {
+    () => {
+        #[global_allocator]
+        static __HELLOHQ_ALLOC: $crate::__dlmalloc::GlobalDlmalloc =
+            $crate::__dlmalloc::GlobalDlmalloc;
 
-            let input: &[u8] = if ptr <= 0 || len <= 0 {
-                &[]
-            } else {
-                unsafe { ::core::slice::from_raw_parts(ptr as *const u8, len as usize) }
-            };
-            let out = match __hq_run(input) {
-                Ok(bytes) => bytes,
-                Err(e) => $crate::ui::empty_state(
-                    "This plugin could not run.",
-                    Some(&::std::format!("{}", e)),
-                )
-                .to_bytes(),
-            };
-            let p = $crate::write_mem_public(&out);
-            $crate::pack(p, out.len() as i32)
+        #[panic_handler]
+        fn __hellohq_panic(_info: &::core::panic::PanicInfo) -> ! {
+            ::core::arch::wasm32::unreachable()
         }
     };
 }
 
-/// Public shim so the [`plugin!`] macro (expanded in the author's crate) can
-/// place bytes in guest memory. Not intended for direct use.
+// Re-export dlmalloc so `setup_guest!` resolves without the author crate adding
+// a direct dependency.
 #[doc(hidden)]
-pub fn write_mem_public(bytes: &[u8]) -> i32 {
-    write_mem(bytes)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests (host-independent: marshalling + UI builders)
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pack_round_trips() {
-        let packed = pack(0x1234, 0x56);
-        assert_eq!(((packed >> 32) & 0xFFFF_FFFF) as i32, 0x1234);
-        assert_eq!((packed & 0xFFFF_FFFF) as i32, 0x56);
-    }
-
-    #[test]
-    fn column_builds_expected_tree() {
-        let v = ui::column(vec![ui::heading("Hi"), ui::text("there")]);
-        let s = serde_json::to_string(&v.0).unwrap();
-        assert!(s.contains("\"type\":\"column\""));
-        assert!(s.contains("\"type\":\"heading\""));
-        assert!(s.contains("\"text\":\"there\""));
-    }
-
-    #[test]
-    fn key_value_list_shape() {
-        let v = ui::key_value_list(vec![("A".into(), "1".into())]);
-        let s = serde_json::to_string(&v.0).unwrap();
-        assert!(s.contains("\"type\":\"key-value-list\""));
-        assert!(s.contains("\"label\":\"A\""));
-        assert!(s.contains("\"value\":\"1\""));
-    }
-
-    #[test]
-    fn button_action_shape() {
-        let v = ui::button("Go", "refresh", json!({"x": 1}));
-        let s = serde_json::to_string(&v.0).unwrap();
-        assert!(s.contains("\"on-tap\""));
-        assert!(s.contains("\"function\":\"refresh\""));
-    }
-}
+pub use dlmalloc as __dlmalloc;

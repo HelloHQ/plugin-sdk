@@ -1,0 +1,25 @@
+# HelloHQ Tier-2 Component Model quickstart plugin.
+#
+# Built for wasm32-unknown-unknown, then turned into a component with
+# `wasm-tools component new` (see build.sh). The empty [workspace] table makes
+# this its own workspace root so it never joins a parent crate's build.
+[workspace]
+
+[package]
+name = "component-quickstart"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+# cdylib: the core wasm module that `wasm-tools component new` wraps into a
+# component.
+crate-type = ["cdylib"]
+
+[dependencies]
+hellohq-plugin-sdk = { path = "../../sdks/rust" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

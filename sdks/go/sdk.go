@@ -34,7 +34,7 @@ import (
 )
 
 // ProtocolVersion is the hellohq:plugin version this SDK targets.
-const ProtocolVersion = "1.0.0"
+const ProtocolVersion = "0.1.0"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Input / dispatch

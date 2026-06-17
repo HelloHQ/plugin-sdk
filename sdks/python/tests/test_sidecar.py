@@ -23,7 +23,7 @@ def test_ready_then_result() -> None:
 
     lines = _drive([{"id": 1, "function": "echo", "args": {"a": 1}}], dispatch)
     assert lines[0]["type"] == "ready"
-    assert lines[0]["protocol_version"] == "1.0.0"
+    assert lines[0]["protocol_version"] == "0.1.0"
     assert lines[1] == {"id": 1, "result": {"got": {"a": 1}}}
 
 
@@ -77,7 +77,7 @@ def test_shutdown_stops_loop() -> None:
         dispatch,
     )
     # Only `ready` is emitted; the post-shutdown RPC is never dispatched.
-    assert lines == [{"type": "ready", "protocol_version": "1.0.0"}]
+    assert lines == [{"type": "ready", "protocol_version": "0.1.0"}]
     assert calls == []
 
 
@@ -86,4 +86,4 @@ def test_message_without_id_is_ignored() -> None:
         raise AssertionError("should not be called")
 
     lines = _drive([{"function": "no_id", "args": None}], dispatch)
-    assert lines == [{"type": "ready", "protocol_version": "1.0.0"}]
+    assert lines == [{"type": "ready", "protocol_version": "0.1.0"}]

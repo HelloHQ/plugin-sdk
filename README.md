@@ -7,7 +7,7 @@ local testing.
 ```
 sdks/
   python/     pip:    hellohq-plugin-sdk     (Tier 1 — Pyodide + Deno sidecar)
-  rust/       crates: hellohq-plugin-sdk     (Tier 2 — Wasm)
+  rust/       crates: hellohq-plugin-sdk     (Tier 2 — Component Model + WASI 0.3, hellohq:plugin@0.1.0)
   js/         npm:    @hellohq/plugin-sdk    (Tier 2 — Wasm / WebView)
   go/         module: github.com/HelloHQ/plugin-sdk/go   (Tier 2 — Wasm)
 cli/          hqplugin — build / test / publish (Dart)
@@ -21,8 +21,9 @@ examples/     end-to-end worked examples
 | You need… | Tier | SDK |
 |---|---|---|
 | NumPy / pandas / scipy | 1 | `sdks/python` |
-| Fast startup, mobile, Rust/Go | 2 | `sdks/rust`, `sdks/go` |
-| JS/TS or a WebView UI | 2 | `sdks/js` |
+| Fast startup, mobile, Rust | 2 — **Component Model + WASI 0.3** (`hellohq:plugin@0.1.0`) | `sdks/rust` |
+| Fast startup, mobile, Go | 2 — Wasm | `sdks/go` |
+| JS/TS or a WebView UI | 2 — Wasm / WebView | `sdks/js` |
 
 ## Status
 
@@ -31,7 +32,7 @@ This is the initial scaffold (Phase 4 — *begin*).
 | Component | Status |
 |---|---|
 | `sdks/python` | working sidecar runtime (ready/RPC/ping/shutdown) |
-| `sdks/rust` | core types + host bindings + `#[plugin_run]` surface |
+| `sdks/rust` | Component Model SDK against `hellohq:plugin@0.1.0` (`Plugin` trait + `export_plugin!`, `hq::*` capabilities, streaming inference); builds to a verified component |
 | `sdks/js` | typed `HQHost` surface (skeleton) |
 | `sdks/go` | module + dispatch skeleton |
 | `cli` | `hqplugin` command surface (skeleton) |
