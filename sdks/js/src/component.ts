@@ -30,13 +30,20 @@
 //
 // ── Streaming inference ──────────────────────────────────────────────────────
 // `hq.inference.complete` is declared against the canonical WIT
-// (`-> stream<string>`, surfaced by jco as `ReadableStream<string>`). NOTE: the
-// pinned componentize-js (0.21.0) cannot yet build a component whose world
-// imports a `stream` type — see `wit/README.md`. The default build world
-// (`hellohq-plugin-component`) therefore OMITS `inference`; the helper is kept
-// here for forward-compatibility and the raw-bindings escape hatch. Building a
-// plugin that calls `hq.inference.*` will fail at `jco componentize` until the
-// engine gains stream support.
+// (`-> stream<string>`, surfaced by jco as `ReadableStream<string>`).
+//
+// The JS-side `stream<T>` RUNTIME already exists: `@bytecodealliance/preview3-shim`
+// implements WASI 0.3 streams/futures (`StreamReader`/`StreamWriter`/`stream()`,
+// bridged to WHATWG `ReadableStream`). The remaining gap is the GUEST ENGINE:
+// the pinned componentize-js (0.21.0) crashes building a component whose world
+// imports a `stream` type, and even on newer P3 builds a native JS Promise isn't
+// yet driven by the component-model-async executor. That work is in flight
+// upstream (jco's `preview3-shim` + p3 bindgen "lift streams as typed arrays";
+// `dicej/componentize-js`) but UNRELEASED. So the default build world
+// (`hellohq-plugin-component`) OMITS `inference`; this helper is kept for
+// forward-compatibility and the raw-bindings escape hatch, and a plugin that
+// calls `hq.inference.*` will fail at `jco componentize` until the engine ships
+// stream support. See `wit/README.md`.
 
 import { PROTOCOL_VERSION } from "./index.js";
 

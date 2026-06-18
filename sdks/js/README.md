@@ -106,17 +106,23 @@ The host still gates every capability: an import the host does not wire is
 structurally unreachable. `wasi:sockets`/`wasi:filesystem` write access is never
 granted app-side.
 
-### ⚠️ Inference / streaming is not buildable yet
+### ⚠️ Inference / streaming is not buildable yet (guest engine, not the runtime)
 
 `hq.inference.complete` is declared against the canonical WIT
-(`-> stream<string>`). **componentize-js 0.21.0 cannot componentize a world that
-imports a WIT `stream` type** — it panics in the StarlingMonkey embedding
-splicer. The default build world (`hellohq-plugin-component`) therefore omits
-`inference`, and `hq.inference.*` is loaded lazily so plugins that don't use it
-build cleanly. A plugin that *does* call `hq.inference.*` cannot be built into a
-component on this toolchain until componentize-js gains `stream` support. (The
-Rust SDK has the same sync/async split for the canonical `guest.run`.) See
-[`wit/README.md`](./wit/README.md).
+(`-> stream<string>`). The JS `stream<T>` **runtime** already exists —
+[`@bytecodealliance/preview3-shim`](https://github.com/bytecodealliance/jco/tree/main/packages/preview3-shim)
+implements WASI-0.3 streams/futures (`StreamReader`/`StreamWriter` over WHATWG
+`ReadableStream`). The blocker is the **guest engine**: **componentize-js 0.21.0
+cannot componentize a world that imports a WIT `stream` type** (it panics in the
+StarlingMonkey embedding splicer), and newer P3 builds don't yet drive a native
+JS `Promise` through the component-model-async executor. So the default build
+world (`hellohq-plugin-component`) omits `inference`, and `hq.inference.*` is
+loaded lazily — plugins that don't use it build cleanly; a plugin that *does*
+call it cannot be componentized on this toolchain yet. The SDK ships a parallel
+`hellohq-plugin-inference` world (async `run`) for when this unblocks. The engine
+work is in flight upstream (jco p3 bindgen + `dicej/componentize-js`) but
+unreleased. (Rust + Go build streaming inference today; Rust on released tools,
+Go on an unreleased toolchain.) See [`wit/README.md`](./wit/README.md).
 
 ### Vendored WIT
 
