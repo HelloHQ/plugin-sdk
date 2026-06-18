@@ -7,11 +7,16 @@
 # SpiderMonkey build happens ONCE here; authors just `docker run` the result.
 #
 # Build (after mirror-upstream.sh has populated the mirror):
-#   docker build -t hellohq/plugin-builder:0.1 toolchain/streaming
-# (defaults pull from github.com/HelloHQ/plugin-mirror-*; override with
-#  --build-arg MIRROR_BASE=https://github.com/<org>/plugin-mirror)
+#   docker build -t ghcr.io/<vendor-org>/plugin-builder:0.1 toolchain/streaming
+# (defaults pull from github.com/hellohq-vendor/plugin-mirror-* placeholder;
+#  override with --build-arg MIRROR_BASE=https://github.com/<vendor-org>/plugin-mirror)
 
-ARG MIRROR_BASE=https://github.com/HelloHQ/plugin-mirror
+# MIRROR_BASE points at the dedicated vendor org's mirror-repo prefix.
+# `hellohq-vendor` is a placeholder pending the final org name (docs/adr/0001).
+# Publish the resulting image to GHCR (ghcr.io/<vendor-org>/plugin-builder) —
+# the image is the primary artifact authors consume; these mirrors only rebuild
+# and audit it.
+ARG MIRROR_BASE=https://github.com/hellohq-vendor/plugin-mirror
 
 # ── Stage 1: build componentize-js (with the pop_record patch) ────────────────
 FROM rust:bookworm AS cjs

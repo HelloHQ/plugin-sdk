@@ -74,6 +74,35 @@ the host integrity-checks before execution — so the trust boundary is the
 **verified artifact**, not the builder. The pinned mirror + checked-in patch
 give a fully auditable, reproducible build for security review.
 
+## Hosting & provenance
+
+Mirrors live in a **dedicated vendor org** (name TBD; `hellohq-vendor` is the
+placeholder wired through `mirror-upstream.sh` `MIRROR_ORG` and the Dockerfile
+`MIRROR_BASE` — a one-line flip when chosen), **never the product org**. This
+keeps first-party code uncluttered and stops these from being misread as HelloHQ
+IP (they are upstream Apache-2 / BSD / **MPL-2.0** — `mozjs`/SpiderMonkey is
+file-level copyleft — and must stay clearly labeled as third-party).
+
+Match the home to the artifact:
+
+| Host | What | Why |
+|---|---|---|
+| **Git mirror** (vendor org, private) | componentize-js, wasmtime, wasm-tools, mozjs, wit-bindgen | cargo fetches them as git deps (`insteadOf` / `--git`) |
+| **Release assets / object store** | `dicej/go` tarballs, WASI-SDK 30, preview1 adapter | binaries — git is the wrong tool; `mozjs` is multi-GB and may instead be vendored as a source tarball |
+| **GHCR** | the built `plugin-builder` image | the **primary artifact authors consume** — mirrors only rebuild + audit it |
+
+Posture:
+
+- **Private** by default — the only consumer is our image build; public mirrors
+  would most strongly signal "HelloHQ maintains these." (Go public only if open
+  reproducibility becomes a stated goal; the ADR + scripts stay public in
+  plugin-sdk regardless.)
+- **Write-restricted to the sync identity** (the bot/maintainer running
+  `mirror-upstream.sh`); everyone else read-only. An *active* mirror must stay
+  writable to sync — so **archive only at deprecation**, not at creation.
+- Each repo's description states "pinned mirror of <upstream>@<rev>, not
+  maintained, see plugin-sdk ADR-0001."
+
 ## Both languages?
 
 Yes. Rust streaming already works on released tools; Go and JS both go through

@@ -20,12 +20,15 @@ need any of this; they build with the released native toolchains on every OS.
 ## One-time setup (maintainers)
 
 ```bash
-# 1. Populate the HelloHQ mirror (needs gh + org repo-create rights).
-MIRROR_ORG=HelloHQ ./mirror-upstream.sh
+# 1. Populate the mirror in the dedicated VENDOR org (not the product org).
+#    `hellohq-vendor` is a placeholder pending the final name (see ADR-0001).
+MIRROR_ORG=hellohq-vendor ./mirror-upstream.sh        # private mirrors
 
-# 2. Build + publish the builder image (set WASI_SDK/GO_BOOT for your arch).
-docker build -t hellohq/plugin-builder:0.1 .
-docker push  hellohq/plugin-builder:0.1
+# 2. Build + publish the builder image to GHCR (set MIRROR_BASE + WASI_SDK/GO_BOOT
+#    for your org + arch). The image is the primary artifact authors consume.
+docker build -t ghcr.io/hellohq-vendor/plugin-builder:0.1 \
+  --build-arg MIRROR_BASE=https://github.com/hellohq-vendor/plugin-mirror .
+docker push  ghcr.io/hellohq-vendor/plugin-builder:0.1
 ```
 
 ## Author usage (any OS, just needs Docker)

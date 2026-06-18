@@ -10,8 +10,14 @@
 # distribution) — expect a multi-GB one-time push.
 set -euo pipefail
 
-MIRROR_ORG="${MIRROR_ORG:-HelloHQ}"
-VISIBILITY="${MIRROR_VISIBILITY:-public}"   # public (open source) or private
+# The dedicated vendor org (NOT the product org). Set MIRROR_ORG to the chosen
+# name before running — `hellohq-vendor` is a placeholder pending the final name
+# (see docs/adr/0001 "Hosting & provenance"). Mirrors are PRIVATE by default
+# (we don't claim ownership of upstream); write access should be restricted to
+# the sync identity running this script. Repos are archived only at DEPRECATION,
+# not here (an active mirror must stay writable to sync).
+MIRROR_ORG="${MIRROR_ORG:-hellohq-vendor}"
+VISIBILITY="${MIRROR_VISIBILITY:-private}"   # private (recommended) or public
 WORK="${WORK:-$(mktemp -d)}"
 
 # upstream-url|mirror-repo|pin (commit or tag to guarantee is present)
