@@ -1,0 +1,61 @@
+// SDK-local supplementary build world — NOT part of the plugin-protocol SSOT.
+//
+// wit-bindgen-go (v0.7.0) + TinyGo (0.41.x) cannot yet bind the WASI-0.3
+// `stream<string>` returned by the canonical `inference.complete`:
+//
+//   complete: func(..) -> result<stream<string>, api-error>
+//
+// `wit-bindgen-go generate` against the full `hellohq-plugin` world fails on the
+// async `stream`/`future` machinery (no `cm`-package codegen for WASI 0.3 async
+// in v0.7.0). This world imports the SAME canonical `hellohq:plugin/*@0.1.0`
+// interfaces MINUS `inference`. Interface identities are unchanged: a component
+// built against this world imports `hellohq:plugin/{types,workspace,storage,
+// events,log}@0.1.0`, exactly what the host implements and permission-gates for
+// a Rust guest. This mirrors the JS SDK's `hellohq-plugin-component` world and
+// the Rust SDK's `guest.run`-is-sync split.
+//
+// This file intentionally has NO `package` declaration — it inherits the
+// `hellohq:plugin@0.1.0` package from `hellohq-plugin.wit` in this directory.
+// When TinyGo + wit-bindgen-go gain WASI-0.3 `stream` support, Go plugins can
+// build against the canonical `hellohq-plugin` world directly and this file can
+// be retired.
+
+world hellohq-plugin-component {
+  import types;
+  import workspace;
+  import storage;
+  import events;
+  import log;
+
+  export guest;
+}
+
+// Build world for the TinyGo toolchain.
+//
+// TinyGo's wasip2 runtime (its asyncify scheduler, allocator, and `runtime`
+// package) emits a handful of WASI-0.2 imports — `wasi:cli/environment`,
+// `wasi:io`, `wasi:clocks`, etc. — that the Component Model encode step must be
+// able to resolve, or `tinygo build` fails with "failed to resolve import
+// wasi:cli/...". This world therefore `include`s the standard `wasi:cli/imports`
+// world (vendored under deps/, copied from TinyGo's lib/wasi-cli) ALONGSIDE the
+// hellohq guest exports + the host-implemented hellohq imports.
+//
+// The resulting component imports BOTH `hellohq:plugin/{types,workspace,storage,
+// events,log}@0.1.0` (what the host gates) AND the WASI-0.2 interfaces the
+// TinyGo runtime needs. The HelloHQ host must provide a WASI-0.2 environment for
+// Go plugins (unlike the no_std Rust path, which imports zero wasi). Note that
+// `wasi:sockets`/`wasi:filesystem` appearing here come from the standard
+// `wasi:cli/imports` aggregate; the host can stub or deny them — only the ones
+// the binary actually calls are reachable, and TinyGo's runtime touches
+// clocks/io/environment/exit, not sockets/filesystem.
+world hellohq-plugin-tinygo {
+  include wasi:cli/imports@0.2.0;
+
+  import types;
+  import workspace;
+  import storage;
+  import events;
+  import log;
+
+  export guest;
+}

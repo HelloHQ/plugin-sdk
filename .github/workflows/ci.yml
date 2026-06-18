@@ -176,6 +176,42 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+  # ── JS SDK — componentize the example (Linux only) ─────────────────────────
+  # jco/componentize-js embeds a JS engine; the built component is
+  # OS-independent, so build once on Linux. Asserts the component exports
+  # `guest` and imports the hellohq:plugin/* subset (+ the wasi:* the engine
+  # pulls in — see sdks/js/README.md "JS plugins require host WASI").
+  js-component-build:
+    name: JS SDK — example component
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install wasm-tools (Component Model toolchain)
+        uses: bytecodealliance/actions/wasm-tools/setup@v1
+
+      - name: Build the JS SDK
+        working-directory: sdks/js
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build component-quickstart-js -> component
+        working-directory: examples/component-quickstart-js
+        run: |
+          npm ci
+          ./build.sh
+          wit=$(wasm-tools component wit component_quickstart_js.component.wasm)
+          echo "$wit"
+          echo "$wit" | grep -q 'export hellohq:plugin/guest@0.1.0'        || { echo "missing guest export"; exit 1; }
+          echo "$wit" | grep -q 'import hellohq:plugin/workspace@0.1.0'     || { echo "missing workspace import"; exit 1; }
+          echo "$wit" | grep -q 'import hellohq:plugin/storage@0.1.0'       || { echo "missing storage import"; exit 1; }
+          echo "$wit" | grep -q 'import wasi:'                              || { echo "expected wasi imports (embedded JS engine)"; exit 1; }
+
   # ── Go SDK — unit tests (all OS) ───────────────────────────────────────────
   go-test:
     name: Go SDK — unit tests (${{ matrix.os }})
@@ -211,6 +247,43 @@ jobs:
 
       - run: GOOS=wasip1 GOARCH=wasm go build -o /tmp/go-plugin.wasm .
         working-directory: sdks/go
+
+  # ── Go SDK — Component Model example (Linux only) ──────────────────────────
+  # TinyGo's wasip2 target builds a Component Model component directly. Unlike
+  # the Rust no_std path, TinyGo's runtime imports wasi:* — see
+  # sdks/go/README.md "The host needs WASI 0.2 for Go plugins".
+  go-component-build:
+    name: Go SDK — example component
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: sdks/go/go.sum
+
+      - name: Install TinyGo
+        uses: acifani/setup-tinygo@v2
+        with:
+          tinygo-version: '0.41.1'
+
+      - name: Install wasm-tools (Component Model toolchain)
+        uses: bytecodealliance/actions/wasm-tools/setup@v1
+
+      - name: Build component-quickstart-go -> component
+        working-directory: examples/component-quickstart-go
+        run: |
+          ./build.sh
+          wit=$(wasm-tools component wit component_quickstart_go.component.wasm)
+          echo "$wit"
+          echo "$wit" | grep -q 'export hellohq:plugin/guest@0.1.0'    || { echo "missing guest export"; exit 1; }
+          echo "$wit" | grep -q 'import hellohq:plugin/workspace@0.1.0' || { echo "missing workspace import"; exit 1; }
+          echo "$wit" | grep -q 'import hellohq:plugin/storage@0.1.0'   || { echo "missing storage import"; exit 1; }
+          echo "$wit" | grep -q 'import hellohq:plugin/events@0.1.0'    || { echo "missing events import"; exit 1; }
+          echo "$wit" | grep -q 'import hellohq:plugin/log@0.1.0'       || { echo "missing log import"; exit 1; }
+          echo "$wit" | grep -q 'import wasi:'                          || { echo "expected wasi imports (TinyGo runtime)"; exit 1; }
+          wasm-tools validate component_quickstart_go.component.wasm
 
   # ── Dart CLI + Mock Host (Linux, macOS, Windows) ────────────────────────────
   # libwasmtime is fetched via scripts/fetch-wasmtime-libs.sh, which handles:
