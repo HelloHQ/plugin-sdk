@@ -106,23 +106,28 @@ The host still gates every capability: an import the host does not wire is
 structurally unreachable. `wasi:sockets`/`wasi:filesystem` write access is never
 granted app-side.
 
-### ⚠️ Inference / streaming is not buildable yet (guest engine, not the runtime)
+### ⚠️ Inference / streaming: verified working, but only on an unreleased toolchain
 
 `hq.inference.complete` is declared against the canonical WIT
-(`-> stream<string>`). The JS `stream<T>` **runtime** already exists —
-[`@bytecodealliance/preview3-shim`](https://github.com/bytecodealliance/jco/tree/main/packages/preview3-shim)
-implements WASI-0.3 streams/futures (`StreamReader`/`StreamWriter` over WHATWG
-`ReadableStream`). The blocker is the **guest engine**: **componentize-js 0.21.0
-cannot componentize a world that imports a WIT `stream` type** (it panics in the
-StarlingMonkey embedding splicer), and newer P3 builds don't yet drive a native
-JS `Promise` through the component-model-async executor. So the default build
+(`-> stream<string>`). On the **released** toolchain it is not buildable:
+**componentize-js 0.21.0 cannot componentize a world that imports a WIT `stream`
+type** (it panics in the StarlingMonkey embedding splicer). So the default build
 world (`hellohq-plugin-component`) omits `inference`, and `hq.inference.*` is
 loaded lazily — plugins that don't use it build cleanly; a plugin that *does*
-call it cannot be componentized on this toolchain yet. The SDK ships a parallel
-`hellohq-plugin-inference` world (async `run`) for when this unblocks. The engine
-work is in flight upstream (jco p3 bindgen + `dicej/componentize-js`) but
-unreleased. (Rust + Go build streaming inference today; Rust on released tools,
-Go on an unreleased toolchain.) See [`wit/README.md`](./wit/README.md).
+call it cannot be componentized on the pinned toolchain.
+
+**It does work on the unreleased stack, verified end-to-end.**
+[`dicej/componentize-js`](https://github.com/dicej/componentize-js) (a Rust +
+mozjs + wit-dylib reboot with stream/future support) built a JS plugin against
+the `hellohq-plugin-inference` world that drains `inference.complete`'s
+`stream<string>`; it ran on a component-model-async host and returned the
+streamed completion. It needs a **Linux** build (WASI-SDK 30 + `libclang` ≥ 19)
+and one upstream `pop_record` field-order fix. The JS `stream<T>` runtime side
+also ships separately in
+[`@bytecodealliance/preview3-shim`](https://github.com/bytecodealliance/jco/tree/main/packages/preview3-shim).
+So JS is where Go was before its spike — real and working, just not yet in a
+published release. (Rust + Go build streaming inference today; Rust on released
+tools, Go on an unreleased toolchain.) See [`wit/README.md`](./wit/README.md).
 
 ### Vendored WIT
 

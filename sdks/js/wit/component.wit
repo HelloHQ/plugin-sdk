@@ -37,16 +37,15 @@ world hellohq-plugin-component {
 // yields. The forward-compat `hq.inference` API in src/component.ts targets this
 // shape (`complete` -> `ReadableStream<string>`).
 //
-// NOT YET BUILDABLE: the gap is the guest engine, not the stream runtime. The
-// JS `stream<T>` runtime already ships in `@bytecodealliance/preview3-shim`
-// (StreamReader/StreamWriter over WHATWG ReadableStream); but `jco componentize`
-// (componentize-js 0.21.0) crashes on the `stream` type, and newer P3 builds
-// don't yet drive a native JS Promise through the component-model-async
-// executor. That engine work is in flight upstream (jco p3 bindgen +
-// `dicej/componentize-js`) but UNRELEASED — so a JS plugin can't be
-// componentized against this world today (Rust + Go build streaming inference).
-// The world is defined now so the build is one componentize-js release away;
-// until then JS plugins use the sync `hellohq-plugin-component`.
+// NOT YET BUILDABLE ON THE RELEASED TOOLCHAIN: `jco componentize`
+// (componentize-js 0.21.0) crashes on the `stream` type. But streaming inference
+// HAS been verified end-to-end against this world on the UNRELEASED stack:
+// `dicej/componentize-js` (a streams/futures-capable reboot) built a JS plugin
+// that drains `inference.complete`'s `stream<string>`, and it ran on a
+// component-model-async host returning the streamed completion. Requires a Linux
+// build (WASI-SDK 30 + libclang-19) and one upstream `pop_record` fix. Until a
+// release ships, JS plugins use the sync `hellohq-plugin-component`; this world
+// is the verified target (Rust + Go build streaming inference today).
 world hellohq-plugin-inference {
   import types;
   import log;

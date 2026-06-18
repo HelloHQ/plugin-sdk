@@ -32,18 +32,20 @@
 // `hq.inference.complete` is declared against the canonical WIT
 // (`-> stream<string>`, surfaced by jco as `ReadableStream<string>`).
 //
-// The JS-side `stream<T>` RUNTIME already exists: `@bytecodealliance/preview3-shim`
-// implements WASI 0.3 streams/futures (`StreamReader`/`StreamWriter`/`stream()`,
-// bridged to WHATWG `ReadableStream`). The remaining gap is the GUEST ENGINE:
-// the pinned componentize-js (0.21.0) crashes building a component whose world
-// imports a `stream` type, and even on newer P3 builds a native JS Promise isn't
-// yet driven by the component-model-async executor. That work is in flight
-// upstream (jco's `preview3-shim` + p3 bindgen "lift streams as typed arrays";
-// `dicej/componentize-js`) but UNRELEASED. So the default build world
-// (`hellohq-plugin-component`) OMITS `inference`; this helper is kept for
-// forward-compatibility and the raw-bindings escape hatch, and a plugin that
-// calls `hq.inference.*` will fail at `jco componentize` until the engine ships
-// stream support. See `wit/README.md`.
+// The pinned componentize-js (0.21.0) crashes building a component whose world
+// imports a `stream` type, so on the RELEASED toolchain `hq.inference.*` cannot
+// be componentized — hence the default build world (`hellohq-plugin-component`)
+// OMITS `inference` and this helper is kept for forward-compatibility + the
+// raw-bindings escape hatch.
+//
+// BUT streaming inference has been verified end-to-end on the UNRELEASED stack:
+// `dicej/componentize-js` (a Rust + mozjs + wit-dylib reboot that supports
+// streams/futures) builds a JS plugin that drains `inference.complete`'s
+// `stream<string>`, and it ran against a component-model-async host returning
+// the streamed completion. It needs a Linux build (WASI-SDK 30 + libclang-19)
+// and one upstream fix (a `pop_record` field-order bug). So JS is where Go was
+// before its spike: real and working, just not in a published release. See
+// `wit/README.md`.
 
 import { PROTOCOL_VERSION } from "./index.js";
 
