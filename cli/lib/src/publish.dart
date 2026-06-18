@@ -122,7 +122,7 @@ Future<int> runPublish({
     return 66;
   }
 
-  final sha256 = await _sha256(wasm.path);
+  final sha256 = await _sha256(wasm.path, commandRunner);
   if (sha256 == null) {
     e.writeln(
         'publish: could not compute SHA-256 — shasum/sha256sum not found.');
@@ -202,11 +202,15 @@ bool _isSemver(String v) {
 }
 
 /// Computes SHA-256 of [path] using the platform's shasum/sha256sum.
-Future<String?> _sha256(String path) async {
+///
+/// Routed through [commandRunner] (not a bare Process.run) so tests can inject a
+/// deterministic hash — the runner is also the only external-command seam, which
+/// keeps the test hermetic on platforms without shasum/sha256sum (e.g. Windows).
+Future<String?> _sha256(String path, PublishCommandRunner commandRunner) async {
   for (final cmd in ['shasum -a 256', 'sha256sum']) {
     final parts = cmd.split(' ');
     try {
-      final r = await Process.run(parts[0], [...parts.skip(1), path]);
+      final r = await commandRunner(parts[0], [...parts.skip(1), path]);
       if (r.exitCode == 0) {
         final out = '${r.stdout}'.trim();
         // Both tools output "<hash>  <filename>" — grab the first token.
