@@ -126,6 +126,16 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release
         working-directory: examples/portfolio_overview
 
+      # Package the core module into a Component (the hellohq:plugin@0.1.0 ABI
+      # the host loads), in place — matches what `hqplugin build` produces. The
+      # e2e matrix downloads this and runs it through `hqplugin test`.
+      - name: Componentize portfolio_overview
+        working-directory: examples/portfolio_overview
+        run: |
+          out=target/wasm32-unknown-unknown/release/portfolio_overview.wasm
+          wasm-tools component new "$out" -o "$out"
+          wasm-tools component wit "$out" | grep -q 'export hellohq:plugin/guest@0.1.0;'
+
       # ── Component Model: build the quickstart examples to components and
       #    assert their shape (canonical hellohq:plugin@0.1.0, no stray wasi).
       - name: Build component-quickstart (sync) -> component
@@ -359,6 +369,11 @@ jobs:
       - name: Install wasm32-unknown-unknown Rust target (for CLI build tests)
         run: rustup target add wasm32-unknown-unknown
         shell: bash
+
+      # `hqplugin build` (exercised by test_cmd_test + build_test) packages the
+      # core module into a Component via `wasm-tools component new`.
+      - name: Install wasm-tools (Component Model toolchain)
+        uses: bytecodealliance/actions/wasm-tools/setup@v1
 
       - name: dart pub get — mock-host
         run: dart pub get

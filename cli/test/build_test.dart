@@ -131,7 +131,7 @@ void main() {
       );
 
       if (code == 69) {
-        markTestSkipped('cargo unavailable mid-run');
+        markTestSkipped('cargo or wasm-tools unavailable mid-run');
         return;
       }
       expect(code, 0, reason: 'build should succeed');

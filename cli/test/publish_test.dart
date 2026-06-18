@@ -23,7 +23,9 @@ void main() {
       // Best-effort: on Windows a CWD handle can linger several seconds.
       // Temp dirs are cleaned by the OS on restart; don't fail the test.
       if (Platform.isWindows) {
-        try { dir.deleteSync(recursive: true); } catch (_) {}
+        try {
+          dir.deleteSync(recursive: true);
+        } catch (_) {}
       } else {
         dir.deleteSync(recursive: true); // final attempt — let it throw
       }
@@ -77,13 +79,10 @@ void main() {
       return ProcessResult(1, 0, '', '');
     }
 
-    final previous = Directory.current;
-    Directory.current = dir;
-    addTearDown(() => Directory.current = previous);
-
     final out = StringBuffer();
     final err = StringBuffer();
     final code = await runPublish(
+      workingDirectory: dir.path,
       version: '1.2.3',
       submit: true,
       out_: out,
@@ -128,7 +127,9 @@ void main() {
         }
       }
       if (Platform.isWindows) {
-        try { dir.deleteSync(recursive: true); } catch (_) {}
+        try {
+          dir.deleteSync(recursive: true);
+        } catch (_) {}
       } else {
         dir.deleteSync(recursive: true);
       }
@@ -157,15 +158,16 @@ void main() {
       if (arguments case ['api', 'user', '--jq', '.login']) {
         return ProcessResult(1, 0, 'octocat\n', '');
       }
-      if (arguments case [
-        'repo',
-        'view',
-        'octocat/plugin-registry',
-        '--json',
-        'parent',
-        '--jq',
-        '.parent.nameWithOwner'
-      ]) {
+      if (arguments
+          case [
+            'repo',
+            'view',
+            'octocat/plugin-registry',
+            '--json',
+            'parent',
+            '--jq',
+            '.parent.nameWithOwner'
+          ]) {
         return ProcessResult(1, 0, 'HelloHQ/plugin-registry\n', '');
       }
       if (arguments
@@ -178,12 +180,9 @@ void main() {
       return ProcessResult(1, 0, '', '');
     }
 
-    final previous = Directory.current;
-    Directory.current = dir;
-    addTearDown(() => Directory.current = previous);
-
     final err = StringBuffer();
     final code = await runPublish(
+      workingDirectory: dir.path,
       version: '1.2.3',
       submit: true,
       out_: StringBuffer(),
@@ -226,12 +225,9 @@ void main() {
         return ProcessResult(1, 0, '', '');
       }
 
-      final previous = Directory.current;
-      Directory.current = dir;
-      addTearDown(() => Directory.current = previous);
-
       final err = StringBuffer();
       final code = await runPublish(
+        workingDirectory: dir.path,
         version: '1.0.0',
         submit: true,
         out_: StringBuffer(),
@@ -239,7 +235,8 @@ void main() {
         commandRunner: runner,
       );
       // No process should have run for a gated rejection.
-      expect(calls, isEmpty, reason: 'gate must reject before any process call');
+      expect(calls, isEmpty,
+          reason: 'gate must reject before any process call');
       return (code: code, err: err.toString());
     }
 

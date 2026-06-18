@@ -6,11 +6,17 @@ import 'package:ffi/ffi.dart';
 import 'package:hqplugin/src/wasm/wasmtime_bindings.dart';
 import 'package:hqplugin/src/wasm/wasmtime_loader.dart';
 
-/// Resolver for the `env.hq_read` host import: request JSON → response JSON.
+/// Resolver for the host capability reads: a `hq_read`-style request JSON
+/// (`{"method": "read:portfolio_names", "portfolio_id"?: …}`) → response JSON
+/// (`{"ok": true, "data": …}` / `{"ok": false, "error": …}`). Bridges the
+/// typed `hellohq:plugin/workspace@0.1.0` imports to the mock host.
 typedef HostResolver = String Function(String requestJson);
 
-/// Sink for `env.emit_event`: (name, payload JSON).
+/// Sink for `hellohq:plugin/events@0.1.0` `emit`: (kind, payload as UTF-8).
 typedef EventSink = void Function(String name, String payload);
+
+/// Sink for `hellohq:plugin/log@0.1.0` `write`: (level, message).
+typedef LogSink = void Function(String level, String message);
 
 /// Thrown on a Wasm compile / link / instantiate / run failure.
 class WasmRunError implements Exception {
@@ -20,27 +26,41 @@ class WasmRunError implements Exception {
   String toString() => 'WasmRunError: $message';
 }
 
-/// Minimal in-CLI Wasm runner — a focused port of the host's
-/// `PluginWasmService` over the same Wasmtime C-API bindings. Loads a plugin
-/// `.wasm`, wires `env.hq_read` (+ `env.emit_event`), and runs `run(ptr,len)`.
+/// In-CLI **Component Model** host — a focused port of the host's Tier-2
+/// runtime over the Wasmtime C-API bindings. Loads a `hellohq:plugin@0.1.0`
+/// component, provides the host capability imports (`log`, `workspace`,
+/// `events`; `storage`/`inference` trap until implemented), and runs the
+/// `guest.run(list<u8>) -> result<list<u8>, string>` export.
+///
+/// Wasmtime handles the canonical-ABI lifting/lowering of component values
+/// (strings, lists, records, results) — the host works in terms of typed
+/// [wasmtime_component_val_t]s, not raw guest memory.
 ///
 /// Fuel-metered so a runaway plugin traps instead of hanging the CLI.
 class WasmRunner {
   final HostResolver resolver;
   final EventSink? onEvent;
+  final LogSink? onLog;
   final int fuelLimit;
 
-  WasmRunner({required this.resolver, this.onEvent, this.fuelLimit = 1000000000});
+  WasmRunner({
+    required this.resolver,
+    this.onEvent,
+    this.onLog,
+    this.fuelLimit = 1000000000,
+  });
 
   WasmtimeBindings get _b => CliWasmtimeLib.bindings;
+
+  static const _pkg = 'hellohq:plugin';
+  static const _guest = '$_pkg/guest@0.1.0';
 
   Pointer<wasm_engine_t> _engine = nullptr;
   Pointer<wasmtime_store_t> _store = nullptr;
   Pointer<wasmtime_context_t> _context = nullptr;
-  Pointer<wasmtime_module_t> _module = nullptr;
-  Pointer<wasmtime_linker_t> _linker = nullptr;
-  Pointer<wasmtime_instance_t> _instance = nullptr;
-  Pointer<wasmtime_memory_t> _memory = nullptr;
+  Pointer<wasmtime_component_t> _component = nullptr;
+  Pointer<wasmtime_component_linker_t> _linker = nullptr;
+  Pointer<wasmtime_component_instance_t> _instance = nullptr;
   final List<NativeCallable> _callbacks = [];
   bool _loaded = false;
 
@@ -60,45 +80,77 @@ class WasmRunner {
 
     final buf = calloc<Uint8>(wasm.length);
     buf.asTypedList(wasm.length).setAll(0, wasm);
-    final modOut = calloc<Pointer<wasmtime_module_t>>();
-    try {
-      _check(_b.wasmtime_module_new(_engine, buf, wasm.length, modOut),
-          'module_new');
-      _module = modOut.value;
-    } finally {
-      calloc.free(buf);
-      calloc.free(modOut);
-    }
-
-    _linker = _b.wasmtime_linker_new(_engine);
-    _defineHqRead();
-    _defineEmitEvent();
-
-    _instance = calloc<wasmtime_instance_t>();
-    final trap = calloc<Pointer<wasm_trap_t>>();
+    final compOut = calloc<Pointer<wasmtime_component_t>>();
     try {
       _check(
-        _b.wasmtime_linker_instantiate(_linker, _context, _module, _instance, trap),
-        'instantiate',
-        trap: trap.value,
+        _b.wasmtime_component_new(_engine, buf, wasm.length, compOut),
+        'component_new (is this a component? run `hqplugin build` to package one)',
       );
+      _component = compOut.value;
     } finally {
-      calloc.free(trap);
+      calloc.free(buf);
+      calloc.free(compOut);
     }
+
+    _linker = _b.wasmtime_component_linker_new(_engine);
+    // First, satisfy *every* import as a trap so instantiation never fails on a
+    // missing import (type-only `types`, or unimplemented `storage`/`inference`
+    // a plugin might pull in). Then shadow the ones we actually implement with
+    // real host functions — last definition wins. A plugin that *calls* an
+    // unimplemented capability gets a clean trap, not a link failure.
+    _b.wasmtime_component_linker_allow_shadowing(_linker, true);
+    _check(
+      _b.wasmtime_component_linker_define_unknown_imports_as_traps(
+        _linker,
+        _component,
+      ),
+      'define_unknown_imports_as_traps',
+    );
+    _defineImports();
+
+    _instance = calloc<wasmtime_component_instance_t>();
+    _check(
+      _b.wasmtime_component_linker_instantiate(
+        _linker,
+        _context,
+        _component,
+        _instance,
+      ),
+      'instantiate',
+    );
     _loaded = true;
+    _callInit();
   }
 
-  /// Run `run(in_ptr, in_len) -> i64`, returning the decoded output JSON.
+  /// Run `guest.run(input) -> result<list<u8>, string>`, returning the decoded
+  /// output (the plugin's declarative JSON).
   String runBytes(String input) {
     if (!_loaded) throw const WasmRunError('not loaded');
     _applyFuel();
-    final inBytes = Uint8List.fromList(utf8.encode(input));
-    final inPtr = _callInt('alloc', [inBytes.length]);
-    _writeMemory(inPtr, inBytes);
-    final packed = _callInt('run', [inPtr, inBytes.length]);
-    final outPtr = (packed >> 32) & 0xFFFFFFFF;
-    final outLen = packed & 0xFFFFFFFF;
-    return utf8.decode(_readMemory(outPtr, outLen));
+    final func = _func(_guest, 'run');
+    final args = calloc<wasmtime_component_val_t>(1);
+    _setU8List(args, utf8.encode(input));
+    final results = calloc<wasmtime_component_val_t>(1);
+    try {
+      _check(
+        _b.wasmtime_component_func_call(func, _context, args, 1, results, 1),
+        'run',
+      );
+      if (results.ref.kind != WASMTIME_COMPONENT_RESULT) {
+        throw WasmRunError('run: unexpected result kind ${results.ref.kind}');
+      }
+      final inner = results.ref.of.result.val;
+      if (!results.ref.of.result.is_ok) {
+        throw WasmRunError('run returned an error: ${_readStringVal(inner)}');
+      }
+      return utf8.decode(_readU8List(inner));
+    } finally {
+      _b.wasmtime_component_val_delete(args);
+      calloc.free(args);
+      _b.wasmtime_component_val_delete(results);
+      calloc.free(results);
+      calloc.free(func);
+    }
   }
 
   void dispose() {
@@ -106,215 +158,568 @@ class WasmRunner {
       cb.close();
     }
     _callbacks.clear();
-    if (_memory != nullptr) calloc.free(_memory);
     if (_instance != nullptr) calloc.free(_instance);
-    if (_linker != nullptr) _b.wasmtime_linker_delete(_linker);
-    if (_module != nullptr) _b.wasmtime_module_delete(_module);
+    if (_linker != nullptr) _b.wasmtime_component_linker_delete(_linker);
+    if (_component != nullptr) _b.wasmtime_component_delete(_component);
     if (_store != nullptr) _b.wasmtime_store_delete(_store);
     if (_engine != nullptr) _b.wasm_engine_delete(_engine);
-    _memory = _instance = _linker = _module = _store = _engine = _context =
-        nullptr;
+    _instance = _linker = _component = _store = _engine = nullptr;
+    _context = nullptr;
     _loaded = false;
   }
 
   // ── Host imports ────────────────────────────────────────────────────────────
 
-  void _defineHqRead() {
-    final cb = NativeCallable<wasmtime_func_callback_tFunction>.isolateLocal((
-      Pointer<Void> env,
-      Pointer<wasmtime_caller_t> caller,
-      Pointer<wasmtime_val_t> args,
-      int nargs,
-      Pointer<wasmtime_val_t> results,
-      int nresults,
-    ) {
-      final reqPtr = args.ref.of.i32;
-      final reqLen = (args + 1).ref.of.i32;
-      final request = utf8.decode(_readMemory(reqPtr, reqLen));
-      final response = utf8.encode(resolver(request));
-      final respPtr = _callInt('alloc', [response.length]);
-      _writeMemory(respPtr, Uint8List.fromList(response));
-      final packed = (respPtr << 32) | response.length;
-      results.ref
-        ..kind = WASMTIME_I64
-        ..of.i64 = packed;
-      return nullptr;
-    });
-    _callbacks.add(cb);
-    _defineFunc('hq_read', const [WASMTIME_I32, WASMTIME_I32], WASMTIME_I64,
-        cb.nativeFunction);
+  void _defineImports() {
+    final root = _b.wasmtime_component_linker_root(_linker);
+
+    final log = _addInstance(root, '$_pkg/log@0.1.0');
+    _addFunc(log, 'write', _cb(_hostLogWrite));
+
+    final ws = _addInstance(root, '$_pkg/workspace@0.1.0');
+    _addFunc(ws, 'read-portfolio-names', _cb(_hostReadPortfolioNames));
+    _addFunc(ws, 'read-currency-rates', _cb(_hostReadCurrencyRates));
+    _addFunc(ws, 'read-sheet-structure', _cb(_hostReadSheetStructure));
+    _addFunc(ws, 'read-asset-count', _cb(_hostReadAssetCount));
+    _addFunc(ws, 'read-aggregated-values', _cb(_hostReadAggregated));
+    _addFunc(ws, 'write-external-file', _cb(_hostWriteExternalFile));
+
+    final events = _addInstance(root, '$_pkg/events@0.1.0');
+    _addFunc(events, 'emit', _cb(_hostEmit));
   }
 
-  void _defineEmitEvent() {
-    final cb = NativeCallable<wasmtime_func_callback_tFunction>.isolateLocal((
-      Pointer<Void> env,
-      Pointer<wasmtime_caller_t> caller,
-      Pointer<wasmtime_val_t> args,
-      int nargs,
-      Pointer<wasmtime_val_t> results,
-      int nresults,
-    ) {
-      final name = utf8.decode(_readMemory(args.ref.of.i32, (args + 1).ref.of.i32));
-      final payload =
-          utf8.decode(_readMemory((args + 2).ref.of.i32, (args + 3).ref.of.i32));
-      onEvent?.call(name, payload);
-      return nullptr;
-    });
-    _callbacks.add(cb);
-    _defineFunc(
-      'emit_event',
-      const [WASMTIME_I32, WASMTIME_I32, WASMTIME_I32, WASMTIME_I32],
-      null,
-      cb.nativeFunction,
-    );
+  /// Bridge a `hq_read`-style request through [resolver] and decode the reply.
+  Map<String, dynamic> _resolve(Map<String, dynamic> req) {
+    try {
+      final decoded = jsonDecode(resolver(jsonEncode(req)));
+      return decoded is Map<String, dynamic>
+          ? decoded
+          : const {'ok': false, 'error': 'bad_response'};
+    } catch (_) {
+      return const {'ok': false, 'error': 'bad_response'};
+    }
   }
 
-  void _defineFunc(
-    String name,
-    List<int> paramKinds,
-    int? resultKind,
-    wasmtime_func_callback_t nativeFn,
+  Pointer<wasmtime_component_val_t> _apiErrorFrom(Map<String, dynamic> r) {
+    final code = (r['error'] ?? 'error').toString();
+    return _apiError(code, code);
+  }
+
+  // log.write(level: enum, message: string)
+  void _hostLogWrite(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
   ) {
-    final params = calloc<Pointer<wasm_valtype_t>>(
-      paramKinds.isEmpty ? 1 : paramKinds.length,
+    final level = _readEnumVal(args);
+    final message = _readStringVal(args + 1);
+    onLog?.call(level, message);
+  }
+
+  // read-portfolio-names() -> result<list<portfolio-name>, api-error>
+  void _hostReadPortfolioNames(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    final r = _resolve({'method': 'read:portfolio_names'});
+    if (r['ok'] != true) return _emit(results, _err(_apiErrorFrom(r)));
+    final data = (r['data'] as List?) ?? const [];
+    final rows = [
+      for (final p in data.cast<Map>())
+        _record([
+          MapEntry('id', _str(_s(p['id']))),
+          MapEntry('name', _str(_s(p['name']))),
+        ]),
+    ];
+    _emit(results, _ok(_list(rows)));
+  }
+
+  // read-currency-rates() -> result<list<currency-rate>, api-error>
+  void _hostReadCurrencyRates(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    final r = _resolve({'method': 'read:currency_rates'});
+    if (r['ok'] != true) return _emit(results, _err(_apiErrorFrom(r)));
+    final data = (r['data'] as List?) ?? const [];
+    final rows = [
+      for (final c in data.cast<Map>())
+        _record([
+          MapEntry('id', _str(_s(c['id']))),
+          MapEntry('name', _str(_s(c['name']))),
+          MapEntry('symbol', _str(_s(c['symbol']))),
+          MapEntry('rate', _f64(_d(c['rate']))),
+        ]),
+    ];
+    _emit(results, _ok(_list(rows)));
+  }
+
+  // read-sheet-structure(portfolio-id) -> result<sheet-summary, api-error>
+  void _hostReadSheetStructure(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    final pid = _readStringVal(args);
+    final r = _resolve({
+      'method': 'read:sheet_structure',
+      'portfolio_id': pid,
+    });
+    if (r['ok'] != true) return _emit(results, _err(_apiErrorFrom(r)));
+    final portfolios =
+        ((r['data'] as Map?)?['portfolios'] as List?) ?? const [];
+    final pf = portfolios.cast<Map>().firstWhere(
+          (p) => p['id'] == pid,
+          orElse: () => portfolios.isEmpty ? const {} : portfolios.first as Map,
+        );
+    final sheets = (pf['sheets'] as List?) ?? const [];
+    final sheetInfos = [
+      for (final s in sheets.cast<Map>())
+        _record([
+          MapEntry('name', _str(_s(s['name']))),
+          MapEntry(
+            'sections',
+            _list([
+              for (final sec
+                  in (s['sections'] as List? ?? const []).cast<Map>())
+                _str(_s(sec['name'])),
+            ]),
+          ),
+        ]),
+    ];
+    _emit(
+      results,
+      _ok(
+        _record([
+          MapEntry('portfolio-id', _str(_s(pf['id'] ?? pid))),
+          MapEntry('sheets', _list(sheetInfos)),
+        ]),
+      ),
     );
-    for (var i = 0; i < paramKinds.length; i++) {
-      params[i] = _b.wasm_valtype_new(_valkind(paramKinds[i]));
+  }
+
+  // read-asset-count(portfolio-id) -> result<asset-count, api-error>
+  void _hostReadAssetCount(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    final pid = _readStringVal(args);
+    final r = _resolve({'method': 'read:asset_count', 'portfolio_id': pid});
+    if (r['ok'] != true) return _emit(results, _err(_apiErrorFrom(r)));
+    final portfolios =
+        ((r['data'] as Map?)?['portfolios'] as List?) ?? const [];
+    final pf = portfolios.cast<Map>().firstWhere(
+          (p) => p['id'] == pid,
+          orElse: () => portfolios.isEmpty ? const {} : portfolios.first as Map,
+        );
+    final byCategory = [
+      _record([
+        MapEntry('category', _str('asset')),
+        MapEntry('count', _u32(_i(pf['asset_items']))),
+      ]),
+      _record([
+        MapEntry('category', _str('debt')),
+        MapEntry('count', _u32(_i(pf['debt_items']))),
+      ]),
+    ];
+    _emit(
+      results,
+      _ok(
+        _record([
+          MapEntry('portfolio-id', _str(_s(pf['id'] ?? pid))),
+          MapEntry('count-by-category', _list(byCategory)),
+        ]),
+      ),
+    );
+  }
+
+  // read-aggregated-values(portfolio-id) -> result<aggregated-summary, api-error>
+  void _hostReadAggregated(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    final pid = _readStringVal(args);
+    final r = _resolve({
+      'method': 'read:aggregated_values',
+      'portfolio_id': pid,
+    });
+    if (r['ok'] != true) return _emit(results, _err(_apiErrorFrom(r)));
+    final portfolios =
+        ((r['data'] as Map?)?['portfolios'] as List?) ?? const [];
+    final pf = portfolios.cast<Map>().firstWhere(
+          (p) => p['id'] == pid,
+          orElse: () => portfolios.isEmpty ? const {} : portfolios.first as Map,
+        );
+    final totals = [
+      for (final t in (pf['totals'] as List? ?? const []).cast<Map>())
+        _record([
+          MapEntry('category', _str(_s(t['currency_id']))),
+          MapEntry('total', _f64(_d(t['total']))),
+        ]),
+    ];
+    _emit(
+      results,
+      _ok(
+        _record([
+          MapEntry('portfolio-id', _str(_s(pf['id'] ?? pid))),
+          MapEntry('totals', _list(totals)),
+        ]),
+      ),
+    );
+  }
+
+  // write-external-file(filename, content) -> result<_, api-error>
+  // RESERVED in the WIT (no Tier-2 wiring) — deny cleanly.
+  void _hostWriteExternalFile(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    _emit(
+      results,
+      _err(
+        _apiError(
+          'permission-denied',
+          'write-external-file is not available in hqplugin test',
+        ),
+      ),
+    );
+  }
+
+  // emit(plugin-event{kind, payload: list<u8>}) -> result<_, api-error>
+  void _hostEmit(
+    Pointer<wasmtime_component_val_t> args,
+    int nargs,
+    Pointer<wasmtime_component_val_t> results,
+    int nresults,
+  ) {
+    final rec = args.ref.of.record;
+    String kind = '';
+    String payload = '';
+    for (var i = 0; i < rec.size; i++) {
+      final e = rec.data + i;
+      final field = _readName(e.ref.name);
+      if (field == 'kind') {
+        kind = _readStringVal(_valPtr(e));
+      } else if (field == 'payload') {
+        payload = utf8.decode(_readU8List(_valPtr(e)));
+      }
     }
-    final paramsVec = calloc<wasm_valtype_vec_t>();
-    _b.wasm_valtype_vec_new(paramsVec, paramKinds.length, params);
-    final resultsVec = calloc<wasm_valtype_vec_t>();
-    if (resultKind != null) {
-      final r = calloc<Pointer<wasm_valtype_t>>(1);
-      r[0] = _b.wasm_valtype_new(_valkind(resultKind));
-      _b.wasm_valtype_vec_new(resultsVec, 1, r);
-      calloc.free(r);
-    } else {
-      _b.wasm_valtype_vec_new(resultsVec, 0, nullptr);
+    onEvent?.call(kind, payload);
+    _emit(results, _ok(null));
+  }
+
+  /// Pointer to the `val` field of a record entry — it follows the `name`
+  /// (`wasm_name_t`, 16 bytes, 8-aligned) field with no padding.
+  Pointer<wasmtime_component_val_t> _valPtr(
+    Pointer<wasmtime_component_valrecord_entry> entry,
+  ) =>
+      Pointer<wasmtime_component_val_t>.fromAddress(
+        entry.address + sizeOf<wasm_name_t>(),
+      );
+
+  // ── Component-value builders ──────────────────────────────────────────────
+  // Each returns a freshly calloc'd container the caller takes ownership of:
+  // nesting copies the struct by value and frees the container; the top-level
+  // value handed to wasmtime is freed by it via `wasmtime_component_val_delete`.
+
+  Pointer<wasmtime_component_val_t> _str(String s) {
+    final v = calloc<wasmtime_component_val_t>();
+    _setStr(v, s);
+    return v;
+  }
+
+  void _setStr(Pointer<wasmtime_component_val_t> slot, String s) {
+    final bytes = utf8.encode(s);
+    final data = malloc<Uint8>(bytes.isEmpty ? 1 : bytes.length);
+    if (bytes.isNotEmpty) data.asTypedList(bytes.length).setAll(0, bytes);
+    slot.ref.kind = WASMTIME_COMPONENT_STRING;
+    slot.ref.of.string
+      ..size = bytes.length
+      ..data = data.cast();
+  }
+
+  Pointer<wasmtime_component_val_t> _f64(double d) {
+    final v = calloc<wasmtime_component_val_t>();
+    v.ref.kind = WASMTIME_COMPONENT_F64;
+    v.ref.of.f64 = d;
+    return v;
+  }
+
+  Pointer<wasmtime_component_val_t> _u32(int n) {
+    final v = calloc<wasmtime_component_val_t>();
+    v.ref.kind = WASMTIME_COMPONENT_U32;
+    v.ref.of.u32 = n;
+    return v;
+  }
+
+  void _setU8List(Pointer<wasmtime_component_val_t> slot, List<int> bytes) {
+    final n = bytes.length;
+    final data = malloc<wasmtime_component_val>(n == 0 ? 1 : n);
+    for (var i = 0; i < n; i++) {
+      (data + i).ref
+        ..kind = WASMTIME_COMPONENT_U8
+        ..of.u8 = bytes[i] & 0xff;
     }
-    final funcType = _b.wasm_functype_new(paramsVec, resultsVec);
-    final mod = 'env'.toNativeUtf8();
-    final nm = name.toNativeUtf8();
+    slot.ref.kind = WASMTIME_COMPONENT_LIST;
+    slot.ref.of.list
+      ..size = n
+      ..data = data;
+  }
+
+  Pointer<wasmtime_component_val_t> _record(
+    List<MapEntry<String, Pointer<wasmtime_component_val_t>>> fields,
+  ) {
+    final k = fields.length;
+    final data = malloc<wasmtime_component_valrecord_entry>(k);
+    for (var i = 0; i < k; i++) {
+      final name = utf8.encode(fields[i].key);
+      final nd = malloc<Uint8>(name.isEmpty ? 1 : name.length);
+      if (name.isNotEmpty) nd.asTypedList(name.length).setAll(0, name);
+      (data + i).ref.name
+        ..size = name.length
+        ..data = nd.cast();
+      (data + i).ref.val = fields[i].value.ref;
+      calloc.free(fields[i].value);
+    }
+    final v = calloc<wasmtime_component_val_t>();
+    v.ref.kind = WASMTIME_COMPONENT_RECORD;
+    v.ref.of.record
+      ..size = k
+      ..data = data;
+    return v;
+  }
+
+  Pointer<wasmtime_component_val_t> _list(
+    List<Pointer<wasmtime_component_val_t>> elems,
+  ) {
+    final n = elems.length;
+    final data = malloc<wasmtime_component_val>(n == 0 ? 1 : n);
+    for (var i = 0; i < n; i++) {
+      (data + i).ref = elems[i].ref;
+      calloc.free(elems[i]);
+    }
+    final v = calloc<wasmtime_component_val_t>();
+    v.ref.kind = WASMTIME_COMPONENT_LIST;
+    v.ref.of.list
+      ..size = n
+      ..data = data;
+    return v;
+  }
+
+  /// `result<T, E>` ok-branch. [payload] is null for a unit (`_`) ok type.
+  Pointer<wasmtime_component_val_t> _ok(
+      Pointer<wasmtime_component_val_t>? payload) {
+    final v = calloc<wasmtime_component_val_t>();
+    v.ref.kind = WASMTIME_COMPONENT_RESULT;
+    v.ref.of.result.is_ok = true;
+    v.ref.of.result.val =
+        payload == null ? nullptr : _b.wasmtime_component_val_new(payload);
+    if (payload != null) calloc.free(payload);
+    return v;
+  }
+
+  Pointer<wasmtime_component_val_t> _err(
+      Pointer<wasmtime_component_val_t> payload) {
+    final v = calloc<wasmtime_component_val_t>();
+    v.ref.kind = WASMTIME_COMPONENT_RESULT;
+    v.ref.of.result.is_ok = false;
+    v.ref.of.result.val = _b.wasmtime_component_val_new(payload);
+    calloc.free(payload);
+    return v;
+  }
+
+  Pointer<wasmtime_component_val_t> _apiError(String code, String message) =>
+      _record([
+        MapEntry('code', _str(code)),
+        MapEntry('message', _str(message)),
+      ]);
+
+  /// Move [built] into the wasmtime-provided result slot and release its
+  /// container. Wasmtime owns (and later deletes) the moved contents.
+  void _emit(
+    Pointer<wasmtime_component_val_t> resultSlot,
+    Pointer<wasmtime_component_val_t> built,
+  ) {
+    resultSlot.ref = built.ref;
+    calloc.free(built);
+  }
+
+  // ── Component-value readers ───────────────────────────────────────────────
+
+  String _readStringVal(Pointer<wasmtime_component_val_t> v) =>
+      _readName(v.ref.of.string);
+
+  String _readEnumVal(Pointer<wasmtime_component_val_t> v) =>
+      _readName(v.ref.of.enumeration);
+
+  String _readName(wasm_name_t n) =>
+      n.size == 0 ? '' : utf8.decode(n.data.cast<Uint8>().asTypedList(n.size));
+
+  Uint8List _readU8List(Pointer<wasmtime_component_val_t> v) {
+    final l = v.ref.of.list;
+    final out = Uint8List(l.size);
+    for (var i = 0; i < l.size; i++) {
+      out[i] = (l.data + i).ref.of.u8;
+    }
+    return out;
+  }
+
+  // ── Linker / export plumbing ──────────────────────────────────────────────
+
+  Pointer<wasmtime_component_linker_instance_t> _addInstance(
+    Pointer<wasmtime_component_linker_instance_t> parent,
+    String name,
+  ) {
+    final np = name.toNativeUtf8();
+    final out = calloc<Pointer<wasmtime_component_linker_instance_t>>();
     try {
       _check(
-        _b.wasmtime_linker_define_func(
-          _linker,
-          mod.cast<Char>(),
-          mod.length,
-          nm.cast<Char>(),
-          nm.length,
-          funcType,
-          nativeFn,
+        _b.wasmtime_component_linker_instance_add_instance(
+          parent,
+          np.cast<Char>(),
+          np.length,
+          out,
+        ),
+        'add_instance($name)',
+      );
+      return out.value;
+    } finally {
+      malloc.free(np);
+      calloc.free(out);
+    }
+  }
+
+  void _addFunc(
+    Pointer<wasmtime_component_linker_instance_t> inst,
+    String name,
+    NativeCallable<wasmtime_component_func_callback_tFunction> cb,
+  ) {
+    _callbacks.add(cb);
+    final np = name.toNativeUtf8();
+    try {
+      _check(
+        _b.wasmtime_component_linker_instance_add_func(
+          inst,
+          np.cast<Char>(),
+          np.length,
+          cb.nativeFunction,
           nullptr,
           nullptr,
         ),
-        'define_func($name)',
+        'add_func($name)',
       );
     } finally {
-      malloc.free(mod);
-      malloc.free(nm);
-      _b.wasm_functype_delete(funcType);
-      calloc.free(params);
-      calloc.free(paramsVec);
-      calloc.free(resultsVec);
+      malloc.free(np);
     }
   }
 
-  int _valkind(int wasmtimeKind) =>
-      wasmtimeKind == WASMTIME_I64 ? wasm_valkind_enum.WASM_I64.value : wasm_valkind_enum.WASM_I32.value;
+  /// Wrap a host handler in a wasmtime component func callback.
+  NativeCallable<wasmtime_component_func_callback_tFunction> _cb(
+    void Function(
+      Pointer<wasmtime_component_val_t> args,
+      int nargs,
+      Pointer<wasmtime_component_val_t> results,
+      int nresults,
+    ) handler,
+  ) {
+    return NativeCallable<
+        wasmtime_component_func_callback_tFunction>.isolateLocal(
+      (
+        Pointer<Void> data,
+        Pointer<wasmtime_context_t> ctx,
+        Pointer<wasmtime_component_func_type_t> type,
+        Pointer<wasmtime_component_val_t> args,
+        int nargs,
+        Pointer<wasmtime_component_val_t> results,
+        int nresults,
+      ) {
+        handler(args, nargs, results, nresults);
+        return nullptr;
+      },
+    );
+  }
 
-  // ── Export calls ────────────────────────────────────────────────────────────
-
-  int _callInt(String name, List<int> args) {
-    final namePtr = name.toNativeUtf8();
-    final externOut = calloc<wasmtime_extern_t>();
-    final funcCopy = calloc<wasmtime_func_t>();
-    final argsPtr = calloc<wasmtime_val_t>(args.isEmpty ? 1 : args.length);
-    final resultsPtr = calloc<wasmtime_val_t>(1);
-    final trap = calloc<Pointer<wasm_trap_t>>();
+  void _callInit() {
+    final Pointer<wasmtime_component_func_t> func;
     try {
-      final found = _b.wasmtime_instance_export_get(
-          _context, _instance, namePtr.cast<Char>(), namePtr.length, externOut);
-      if (!found || externOut.ref.kind != WASMTIME_EXTERN_FUNC) {
-        throw WasmRunError('export not found or not a function: $name');
-      }
-      funcCopy.ref = externOut.ref.of.func;
-      for (var i = 0; i < args.length; i++) {
-        (argsPtr + i).ref
-          ..kind = WASMTIME_I32
-          ..of.i32 = args[i];
-      }
-      final err = _b.wasmtime_func_call(
-          _context, funcCopy, argsPtr, args.length, resultsPtr, 1, trap);
-      if (err != nullptr) throw WasmRunError(_takeError(err, name));
-      if (trap.value != nullptr) throw WasmRunError(_takeTrap(trap.value));
-      final r = resultsPtr.ref;
-      return r.kind == WASMTIME_I64 ? r.of.i64 : r.of.i32;
-    } finally {
-      malloc.free(namePtr);
-      calloc.free(externOut);
-      calloc.free(funcCopy);
-      calloc.free(argsPtr);
-      calloc.free(resultsPtr);
-      calloc.free(trap);
+      func = _func(_guest, 'init');
+    } on WasmRunError {
+      return; // init is optional
     }
-  }
-
-  // ── Memory ──────────────────────────────────────────────────────────────────
-
-  Pointer<wasmtime_memory_t> _memoryHandle() {
-    if (_memory != nullptr) return _memory;
-    final namePtr = 'memory'.toNativeUtf8();
-    final externOut = calloc<wasmtime_extern_t>();
     try {
-      final found = _b.wasmtime_instance_export_get(
-          _context, _instance, namePtr.cast<Char>(), namePtr.length, externOut);
-      if (!found || externOut.ref.kind != WASMTIME_EXTERN_MEMORY) {
-        throw const WasmRunError('module does not export "memory"');
-      }
-      _memory = calloc<wasmtime_memory_t>();
-      _memory.ref = externOut.ref.of.memory;
-      return _memory;
+      _check(
+        _b.wasmtime_component_func_call(func, _context, nullptr, 0, nullptr, 0),
+        'init',
+      );
     } finally {
-      malloc.free(namePtr);
-      calloc.free(externOut);
+      calloc.free(func);
     }
   }
 
-  Uint8List _memoryView() {
-    final mem = _memoryHandle();
-    final base = _b.wasmtime_memory_data(_context, mem);
-    final size = _b.wasmtime_memory_data_size(_context, mem);
-    return base.asTypedList(size);
-  }
-
-  Uint8List _readMemory(int ptr, int len) {
-    final v = _memoryView();
-    if (ptr < 0 || len < 0 || ptr + len > v.length) {
-      throw WasmRunError('OOB read ptr=$ptr len=$len size=${v.length}');
+  Pointer<wasmtime_component_func_t> _func(String instance, String name) {
+    final instIdx = _exportIndex(nullptr, instance);
+    if (instIdx == nullptr) {
+      throw WasmRunError('export instance not found: $instance');
     }
-    return Uint8List.fromList(v.sublist(ptr, ptr + len));
-  }
-
-  void _writeMemory(int ptr, Uint8List bytes) {
-    final v = _memoryView();
-    if (ptr < 0 || ptr + bytes.length > v.length) {
-      throw WasmRunError('OOB write ptr=$ptr len=${bytes.length}');
+    final funcIdx = _exportIndex(instIdx, name);
+    if (funcIdx == nullptr) {
+      _b.wasmtime_component_export_index_delete(instIdx);
+      throw WasmRunError('export func not found: $instance#$name');
     }
-    v.setRange(ptr, ptr + bytes.length, bytes);
+    final out = calloc<wasmtime_component_func_t>();
+    final ok = _b.wasmtime_component_instance_get_func(
+      _instance,
+      _context,
+      funcIdx,
+      out,
+    );
+    _b.wasmtime_component_export_index_delete(instIdx);
+    _b.wasmtime_component_export_index_delete(funcIdx);
+    if (!ok) {
+      calloc.free(out);
+      throw WasmRunError('get_func failed: $instance#$name');
+    }
+    return out;
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────────
+  Pointer<wasmtime_component_export_index_t> _exportIndex(
+    Pointer<wasmtime_component_export_index_t> parent,
+    String name,
+  ) {
+    final np = name.toNativeUtf8();
+    try {
+      return _b.wasmtime_component_instance_get_export_index(
+        _instance,
+        _context,
+        parent,
+        np.cast<Char>(),
+        np.length,
+      );
+    } finally {
+      malloc.free(np);
+    }
+  }
+
+  // ── Misc ──────────────────────────────────────────────────────────────────
 
   void _applyFuel() {
-    final err = _b.wasmtime_context_set_fuel(_context, fuelLimit);
-    _check(err, 'set_fuel');
+    _check(_b.wasmtime_context_set_fuel(_context, fuelLimit), 'set_fuel');
   }
 
-  void _check(Pointer<wasmtime_error_t> err, String op,
-      {Pointer<wasm_trap_t>? trap}) {
+  void _check(Pointer<wasmtime_error_t> err, String op) {
     if (err != nullptr) throw WasmRunError(_takeError(err, op));
-    if (trap != null && trap != nullptr) throw WasmRunError(_takeTrap(trap));
   }
 
   String _takeError(Pointer<wasmtime_error_t> err, String op) {
@@ -330,22 +735,14 @@ class WasmRunner {
     }
   }
 
-  String _takeTrap(Pointer<wasm_trap_t> trap) {
-    final vec = calloc<wasm_byte_vec_t>();
-    try {
-      _b.wasm_trap_message(trap, vec);
-      final msg = _readVec(vec);
-      _b.wasm_byte_vec_delete(vec);
-      _b.wasm_trap_delete(trap);
-      return 'trap: $msg';
-    } finally {
-      calloc.free(vec);
-    }
-  }
-
   String _readVec(Pointer<wasm_byte_vec_t> vec) {
     final size = vec.ref.size;
     if (size == 0 || vec.ref.data == nullptr) return '';
     return String.fromCharCodes(vec.ref.data.cast<Uint8>().asTypedList(size));
   }
+
+  // JSON coercion helpers.
+  static String _s(Object? v) => v?.toString() ?? '';
+  static double _d(Object? v) => v is num ? v.toDouble() : 0.0;
+  static int _i(Object? v) => v is num ? v.toInt() : 0;
 }

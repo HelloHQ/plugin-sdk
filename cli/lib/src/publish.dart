@@ -30,6 +30,7 @@ Future<int> runPublish({
   StringSink? out_,
   StringSink? err_,
   PublishCommandRunner commandRunner = _runCommand,
+  String? workingDirectory,
 }) async {
   final o = out_ ?? stdout;
   final e = err_ ?? stderr;
@@ -45,7 +46,7 @@ Future<int> runPublish({
   }
 
   // ── Locate manifest.json ───────────────────────────────────────────────────
-  final manifestFile = _findManifest();
+  final manifestFile = _findManifest(workingDirectory);
   if (manifestFile == null) {
     e.writeln(
       'publish: no manifest.json found in the current directory.\n'
@@ -102,8 +103,7 @@ Future<int> runPublish({
     return 65;
   }
   if (licenseKind == 'open_source' &&
-      (licensing['spdx'] == null ||
-          (licensing['spdx'] as String).isEmpty)) {
+      (licensing['spdx'] == null || (licensing['spdx'] as String).isEmpty)) {
     e.writeln(
       'publish: warning — open-source plugin has no licensing.spdx. Add one '
       '(e.g. "MIT", "Apache-2.0") so users see the licence in the catalog.',
@@ -111,7 +111,9 @@ Future<int> runPublish({
   }
 
   // ── Hash the wasm artifact ────────────────────────────────────────────────
-  final wasm = File(wasmPath ?? 'plugin.wasm');
+  // Default to plugin.wasm beside the manifest (the project dir), so publishing
+  // works without an explicit --wasm and without depending on the process cwd.
+  final wasm = File(wasmPath ?? p.join(workingDirectory ?? '.', 'plugin.wasm'));
   if (!wasm.existsSync()) {
     e.writeln(
       'publish: wasm artifact not found at "${wasm.path}".\n'
@@ -179,9 +181,9 @@ Future<int> runPublish({
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Walks up from cwd looking for `manifest.json`.
-File? _findManifest() {
-  var dir = Directory.current;
+/// Walks up from [from] (or cwd) looking for `manifest.json`.
+File? _findManifest([String? from]) {
+  var dir = from == null ? Directory.current : Directory(from);
   for (var i = 0; i < 4; i++) {
     final candidate = File(p.join(dir.path, 'manifest.json'));
     if (candidate.existsSync()) return candidate;

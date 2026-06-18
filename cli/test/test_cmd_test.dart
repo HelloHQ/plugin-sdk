@@ -6,15 +6,23 @@ import 'package:hqplugin/src/wasm/wasm_runner.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-Future<bool> _hasCargo() async {
+Future<bool> _hasExe(String name) async {
   try {
-    return (await Process.run('cargo', ['--version'])).exitCode == 0;
+    return (await Process.run(name, ['--version'])).exitCode == 0;
   } catch (_) {
     return false;
   }
 }
 
+Future<bool> _hasCargo() => _hasExe('cargo');
+
 void main() {
+  // Capture the working directory at suite load — before any test body runs.
+  // publish_test.dart mutates the process-global Directory.current mid-test,
+  // and `dart test` runs suites concurrently in one process, so resolving the
+  // example crate against a live Directory.current races (→ spurious skips).
+  final cwdAtLoad = Directory.current.path;
+
   group('runTest — guards', () {
     test('missing --wasm is a usage error', () async {
       final err = StringBuffer();
@@ -41,11 +49,16 @@ void main() {
         return;
       }
       if (!WasmRunner.isRuntimeAvailable) {
-        markTestSkipped('wasmtime not provisioned (scripts/fetch-wasmtime-libs.sh)');
+        markTestSkipped(
+            'wasmtime not provisioned (scripts/fetch-wasmtime-libs.sh)');
+        return;
+      }
+      if (!await _hasExe('wasm-tools')) {
+        markTestSkipped('wasm-tools not installed (needed to componentize)');
         return;
       }
       final crate = p.normalize(
-        p.join(Directory.current.path, '..', 'examples', 'portfolio_overview'),
+        p.join(cwdAtLoad, '..', 'examples', 'portfolio_overview'),
       );
       if (!File(p.join(crate, 'Cargo.toml')).existsSync()) {
         markTestSkipped('example crate missing');
@@ -75,15 +88,20 @@ void main() {
         err_: StringBuffer(),
       );
       expect(code, 0);
-      expect(out.toString(), contains('key-value-list'));
+      // portfolio_overview emits {count, denied, portfolios:[{id,name}]} from
+      // the (granted) read of the two demo portfolios.
+      expect(out.toString(), contains('"count": 2'));
+      expect(out.toString(), contains('"denied": false'));
       expect(out.toString(), contains('Personal'));
+      expect(out.toString(), contains('Business'));
 
-      // 3. test — denied → graceful empty-state, still exit 0
+      // 3. test — denied → graceful empty state (denied:true), still exit 0
       final out2 = StringBuffer();
       final code2 =
           await runTest(wasmPath: wasm, out_: out2, err_: StringBuffer());
       expect(code2, 0);
-      expect(out2.toString(), contains('empty-state'));
+      expect(out2.toString(), contains('"denied": true'));
+      expect(out2.toString(), contains('"count": 0'));
     }, timeout: const Timeout(Duration(minutes: 3)));
   });
 }

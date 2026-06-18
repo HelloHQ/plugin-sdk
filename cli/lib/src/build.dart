@@ -56,7 +56,8 @@ Future<int> _buildGo(
           .whereType<File>()
           .any((f) => f.path.endsWith('.go'));
   if (!File(goMod).existsSync() && !hasGoFiles) {
-    e.writeln('build: no go.mod or .go files in "$pkgDir". Pass --entry <pkg-dir>.');
+    e.writeln(
+        'build: no go.mod or .go files in "$pkgDir". Pass --entry <pkg-dir>.');
     return 66; // EX_NOINPUT
   }
   if (!await _hasGoToolchain()) {
@@ -132,10 +133,10 @@ Future<int> _buildRust(
   );
   final wasms = releaseDir.existsSync()
       ? releaseDir
-            .listSync()
-            .whereType<File>()
-            .where((f) => f.path.endsWith('.wasm'))
-            .toList()
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.wasm'))
+          .toList()
       : <File>[];
   if (wasms.isEmpty) {
     e.writeln(
@@ -156,8 +157,47 @@ Future<int> _buildRust(
     outFile.parent.createSync(recursive: true);
   }
   src.copySync(out);
+
+  // Package the core module into a WebAssembly **Component** (the
+  // `hellohq:plugin@0.1.0` ABI the host loads). `wasm-tools component new`
+  // reads the `component-type` custom section wit-bindgen embeds and
+  // tree-shakes unused capability imports out. No WASI adapter is needed —
+  // the SDK's `setup_guest!` keeps the import surface to `hellohq:plugin/*`.
+  final comp = await _componentize(out, o, e);
+  if (comp != 0) return comp;
+
   o.writeln('build: ✓ ${p.basename(src.path)} → $out '
-      '(${outFile.lengthSync()} bytes)');
+      '(component, ${outFile.lengthSync()} bytes)');
+  return 0;
+}
+
+/// Package a core `.wasm` module into a Component, in place at [wasmPath].
+Future<int> _componentize(String wasmPath, StringSink o, StringSink e) async {
+  if (!await _hasExecutable('wasm-tools')) {
+    e.writeln(
+      'build: wasm-tools not found — needed to package the Component. '
+      'Install: cargo install wasm-tools',
+    );
+    return 69; // EX_UNAVAILABLE
+  }
+  final tmp = '$wasmPath.component';
+  final r = await Process.run('wasm-tools', [
+    'component',
+    'new',
+    wasmPath,
+    '-o',
+    tmp,
+  ]);
+  if (r.exitCode != 0) {
+    if ('${r.stdout}'.isNotEmpty) o.write(r.stdout);
+    if ('${r.stderr}'.isNotEmpty) e.write(r.stderr);
+    e.writeln(
+      'build: `wasm-tools component new` failed. Is the crate built with '
+      'hellohq-plugin-sdk (so it embeds the component-type section)?',
+    );
+    return 70; // EX_SOFTWARE
+  }
+  File(tmp).renameSync(wasmPath);
   return 0;
 }
 
