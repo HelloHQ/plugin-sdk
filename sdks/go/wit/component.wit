@@ -1,24 +1,28 @@
-// SDK-local supplementary build world — NOT part of the plugin-protocol SSOT.
+// SDK-local supplementary build worlds — NOT part of the plugin-protocol SSOT.
 //
-// wit-bindgen-go (v0.7.0) + TinyGo (0.41.x) cannot yet bind the WASI-0.3
-// `stream<string>` returned by the canonical `inference.complete`:
+// The default Go path is wit-bindgen-go (v0.7.0) + TinyGo (0.41.x). It binds
+// every canonical interface EXCEPT the streaming side of `inference`:
 //
 //   complete: func(..) -> result<stream<string>, api-error>
 //
-// `wit-bindgen-go generate` against the full `hellohq-plugin` world fails on the
-// async `stream`/`future` machinery (no `cm`-package codegen for WASI 0.3 async
-// in v0.7.0). This world imports the SAME canonical `hellohq:plugin/*@0.1.0`
-// interfaces MINUS `inference`. Interface identities are unchanged: a component
-// built against this world imports `hellohq:plugin/{types,workspace,storage,
-// events,log}@0.1.0`, exactly what the host implements and permission-gates for
-// a Rust guest. This mirrors the JS SDK's `hellohq-plugin-component` world and
-// the Rust SDK's `guest.run`-is-sync split.
+// wit-bindgen-go *generates* and TinyGo *builds* a guest that imports
+// `inference` (verified) — but the generated `go.bytecodealliance.org/cm`
+// `cm.Stream[T]` has NO read/drain API, so the guest cannot consume the
+// returned token stream. The sync build worlds below therefore omit `inference`
+// and export the canonical sync `guest`. Interface identities are unchanged: a
+// component built against `hellohq-plugin-component` imports
+// `hellohq:plugin/{types,workspace,storage,events,log}@0.1.0`, exactly what the
+// host implements and permission-gates. This mirrors the JS SDK's
+// `hellohq-plugin-component` world and the Rust SDK's `quickstart` (sync) world.
+//
+// Streaming inference IS supported via the separate `hellohq-plugin-inference`
+// world at the bottom of this file (async `run`), built with a different,
+// currently-unreleased toolchain — see that world's comment and
+// examples/component-quickstart-go/inference. So Go offers BOTH modes, exactly
+// like Rust (`quickstart` + `inference-quickstart`).
 //
 // This file intentionally has NO `package` declaration — it inherits the
 // `hellohq:plugin@0.1.0` package from `hellohq-plugin.wit` in this directory.
-// When TinyGo + wit-bindgen-go gain WASI-0.3 `stream` support, Go plugins can
-// build against the canonical `hellohq-plugin` world directly and this file can
-// be retired.
 
 world hellohq-plugin-component {
   import types;
@@ -58,4 +62,27 @@ world hellohq-plugin-tinygo {
   import log;
 
   export guest;
+}
+
+// Inference (async streaming) build world. Mirrors the Rust SDK's
+// `inference-quickstart` world: `run` is an `async func` because draining
+// `inference.complete`'s `stream<string>` yields, and the canonical sync
+// `guest.run` cannot `.await`. A Go plugin that needs streaming inference builds
+// against THIS world; plain (non-inference) plugins keep the sync `guest`
+// export via `hellohq-plugin-component` / `hellohq-plugin-tinygo`.
+//
+// IMPORTANT — this world is NOT buildable with the default Go path
+// (wit-bindgen-go + TinyGo): `go.bytecodealliance.org/cm`'s `cm.Stream[T]` has
+// no read API, so the guest cannot drain the token stream. It requires the
+// `bytecodealliance/wit-bindgen` Go backend (which emits a readable
+// `StreamReader[string]`) + a wasi-on-idle Go runtime + the preview1 reactor
+// adapter. See examples/component-quickstart-go/inference for the working build.
+// Both toolchain pieces are currently unreleased (pinned git revs + a Go fork),
+// so this is the forward-looking path.
+world hellohq-plugin-inference {
+  import types;
+  import log;
+  import inference;
+
+  export run: async func(input: list<u8>) -> result<list<u8>, string>;
 }
