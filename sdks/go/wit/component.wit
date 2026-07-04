@@ -40,20 +40,47 @@ world hellohq-plugin-component {
 // package) emits a handful of WASI-0.2 imports — `wasi:cli/environment`,
 // `wasi:io`, `wasi:clocks`, etc. — that the Component Model encode step must be
 // able to resolve, or `tinygo build` fails with "failed to resolve import
-// wasi:cli/...". This world therefore `include`s the standard `wasi:cli/imports`
-// world (vendored under deps/, copied from TinyGo's lib/wasi-cli) ALONGSIDE the
-// hellohq guest exports + the host-implemented hellohq imports.
+// wasi:cli/...". This world therefore imports the WASI-0.2 interfaces the
+// TinyGo runtime actually needs (vendored under deps/, copied from TinyGo's
+// lib/wasi-cli) ALONGSIDE the hellohq guest exports + the host-implemented
+// hellohq imports.
 //
-// The resulting component imports BOTH `hellohq:plugin/{types,workspace,storage,
-// events,log}@0.1.0` (what the host gates) AND the WASI-0.2 interfaces the
-// TinyGo runtime needs. The HelloHQ host must provide a WASI-0.2 environment for
-// Go plugins (unlike the no_std Rust path, which imports zero wasi). Note that
-// `wasi:sockets`/`wasi:filesystem` appearing here come from the standard
-// `wasi:cli/imports` aggregate; the host can stub or deny them — only the ones
-// the binary actually calls are reachable, and TinyGo's runtime touches
-// clocks/io/environment/exit, not sockets/filesystem.
+// SA3 (doc 59) — structural denial of ambient network/FS, in two layers:
+//
+//  1. `wasi:sockets` is NOT in this world. TinyGo's runtime never imports it,
+//     so the encode succeeds and a component built against this world can
+//     never reach ambient network. If `tinygo build` fails resolving
+//     `wasi:sockets/...`, the guest (or a dependency) is reaching for the
+//     network — fix the guest; do not add sockets here.
+//  2. `wasi:filesystem` IS in this world, unavoidably: TinyGo's wasip2
+//     runtime links `os.File` method plumbing (e.g. `descriptor.create-
+//     directory-at`) that its DCE cannot prove dead once fmt/os is used, so
+//     the encode hard-requires it. It is then REMOVED from the component
+//     surface by the `wasi-virt` post-pass in the example build (virtualized
+//     to an empty deny-all FS; `wasi:cli/environment` is virtualized away
+//     too). CI's SA3 gate verifies the FINAL component imports neither
+//     wasi:sockets nor wasi:filesystem.
+//
+// The resulting (virtualized) component imports BOTH `hellohq:plugin/{types,
+// workspace,storage,events,log}@0.1.0` (what the host gates) AND the benign
+// WASI-0.2 subset (clocks/random/io/stdio) — unlike the no_std Rust path,
+// which imports zero wasi.
 world hellohq-plugin-tinygo {
-  include wasi:cli/imports@0.2.0;
+  include wasi:clocks/imports@0.2.0;
+  include wasi:random/imports@0.2.0;
+  include wasi:io/imports@0.2.0;
+  include wasi:filesystem/imports@0.2.0;
+
+  import wasi:cli/environment@0.2.0;
+  import wasi:cli/exit@0.2.0;
+  import wasi:cli/stdin@0.2.0;
+  import wasi:cli/stdout@0.2.0;
+  import wasi:cli/stderr@0.2.0;
+  import wasi:cli/terminal-input@0.2.0;
+  import wasi:cli/terminal-output@0.2.0;
+  import wasi:cli/terminal-stdin@0.2.0;
+  import wasi:cli/terminal-stdout@0.2.0;
+  import wasi:cli/terminal-stderr@0.2.0;
 
   import types;
   import workspace;
