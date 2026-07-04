@@ -6,7 +6,7 @@ local testing.
 
 ```
 sdks/
-  python/     pip:    hellohq-plugin-sdk     (Tier 1 — Pyodide + Deno sidecar)
+  python/     pip:    hellohq-plugin-sdk     (Tier 1 — native CPython sidecar)
   rust/       crates: hellohq-plugin-sdk     (Tier 2 — Component Model + WASI 0.3, hellohq:plugin@0.1.0)
   js/         npm:    @hellohq/plugin-sdk    (Tier 2 — Component Model + WASI 0.3, hellohq:plugin@0.1.0; jco-built / WebView)
   go/         module: github.com/HelloHQ/plugin-sdk/go   (Tier 2 — Component Model + WASI 0.3, hellohq:plugin@0.1.0; TinyGo-built)
