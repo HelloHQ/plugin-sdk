@@ -36,6 +36,31 @@ ADAPTER_VER="v39.0.1"
 WASM_TOOLS="$(command -v wasm-tools || echo "$HOME/.cargo/bin/wasm-tools")"
 mkdir -p "$TC"
 
+# SA4 (doc 59): verify a downloaded toolchain artifact against a pinned SHA-256
+# before using it, so a compromised/MITM'd release asset can't inject a
+# backdoored compiler/runtime into the build. Expected hashes are supplied out
+# of band (env or CI secret) because they are release-specific; when a pin is
+# provided a mismatch is fatal, and when it is absent we emit a LOUD warning
+# rather than silently trusting the download. Populate GO_FORK_SHA256 /
+# ADAPTER_SHA256 (see toolchain/streaming for the mirror-pinning story) to make
+# these hard gates. `cargo install --locked --git --rev <sha>` below is already
+# SHA-pinned.
+verify_sha256() {
+  # $1 = file, $2 = expected hex sha256 (may be empty = unpinned)
+  local file="$1" expected="$2" got
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$file" | cut -d' ' -f1)
+  else got=$(shasum -a 256 "$file" | cut -d' ' -f1); fi
+  if [ -z "$expected" ]; then
+    echo "::warning::SA4: $file downloaded WITHOUT a pinned sha256 (got $got). Set its *_SHA256 pin to make this a hard integrity gate."
+    return 0
+  fi
+  if [ "$got" != "$expected" ]; then
+    echo "::error::SA4: sha256 mismatch for $file — expected $expected got $got. Refusing to use a tampered toolchain artifact." >&2
+    exit 1
+  fi
+  echo ">> verified sha256 $file"
+}
+
 # 1. Patched Go fork (wasi-on-idle scheduler).
 GO_BOOT="go-$(uname -s | tr 'A-Z' 'a-z')-$(uname -m | sed s/aarch64/arm64/)-bootstrap"
 GO="$TC/$GO_BOOT/bin/go"
@@ -43,6 +68,7 @@ if [ ! -x "$GO" ]; then
   echo ">> fetching Go fork $GO_FORK_TAG ($GO_BOOT)"
   curl -sL "https://github.com/dicej/go/releases/download/$GO_FORK_TAG/$GO_BOOT.tbz" \
     -o "$TC/$GO_BOOT.tbz"
+  verify_sha256 "$TC/$GO_BOOT.tbz" "${GO_FORK_SHA256:-}"
   tar xf "$TC/$GO_BOOT.tbz" -C "$TC"
 fi
 
@@ -52,6 +78,7 @@ if [ ! -f "$ADAPTER" ]; then
   echo ">> fetching preview1 reactor adapter $ADAPTER_VER"
   curl -sL "https://github.com/bytecodealliance/wasmtime/releases/download/$ADAPTER_VER/wasi_snapshot_preview1.reactor.wasm" \
     -o "$ADAPTER"
+  verify_sha256 "$ADAPTER" "${ADAPTER_SHA256:-}"
 fi
 
 # 3. (optional) regenerate the committed bindings with the wit-bindgen Go backend.

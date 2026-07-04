@@ -293,6 +293,15 @@ jobs:
           echo "$wit" | grep -q 'import hellohq:plugin/events@0.1.0'    || { echo "missing events import"; exit 1; }
           echo "$wit" | grep -q 'import hellohq:plugin/log@0.1.0'       || { echo "missing log import"; exit 1; }
           echo "$wit" | grep -q 'import wasi:'                          || { echo "expected wasi imports (TinyGo runtime)"; exit 1; }
+          # SA3 (doc 59): TinyGo legitimately pulls wasi:cli (clocks/io/
+          # environment), but a plugin component must NEVER reach wasi:sockets or
+          # wasi:filesystem — those grant ambient network/FS that bypass the host
+          # permission gate. The canonical Rust world denies them structurally;
+          # gate the Go path here so the "no ambient capability" guarantee holds
+          # for every guest toolchain, not just Rust.
+          if echo "$wit" | grep -Eqi 'import[[:space:]]+wasi:(sockets|filesystem)'; then
+            echo "::error::SA3: component imports wasi:sockets/wasi:filesystem — ambient network/FS is forbidden for plugins (host permission gate would be bypassed)"; exit 1
+          fi
           wasm-tools validate component_quickstart_go.component.wasm
 
   # ── Dart CLI + Mock Host (Linux, macOS, Windows) ────────────────────────────
