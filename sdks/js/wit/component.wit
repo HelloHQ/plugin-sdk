@@ -30,3 +30,26 @@ world hellohq-plugin-component {
 
   export guest;
 }
+
+// Inference (async streaming) build world, mirroring the Rust SDK's
+// `inference-quickstart` and the Go SDK's `hellohq-plugin-inference`. Its `run`
+// is an `async func` because draining `inference.complete`'s `stream<string>`
+// yields. The forward-compat `hq.inference` API in src/component.ts targets this
+// shape (`complete` -> `ReadableStream<string>`).
+//
+// NOT YET BUILDABLE ON THE RELEASED TOOLCHAIN: `jco componentize`
+// (componentize-js 0.21.0) crashes on the `stream` type. But streaming inference
+// HAS been verified end-to-end against this world on the UNRELEASED stack:
+// `dicej/componentize-js` (a streams/futures-capable reboot) built a JS plugin
+// that drains `inference.complete`'s `stream<string>`, and it ran on a
+// component-model-async host returning the streamed completion. Requires a Linux
+// build (WASI-SDK 30 + libclang-19) and one upstream `pop_record` fix. Until a
+// release ships, JS plugins use the sync `hellohq-plugin-component`; this world
+// is the verified target (Rust + Go build streaming inference today).
+world hellohq-plugin-inference {
+  import types;
+  import log;
+  import inference;
+
+  export run: async func(input: list<u8>) -> result<list<u8>, string>;
+}

@@ -35,14 +35,35 @@ that renders correctly here renders correctly in the app.
 ## `build`
 
 `build --lang rust --entry <crate-dir> --out <file>` runs
-`cargo build --target wasm32-unknown-unknown --release` and copies the resulting
-`.wasm` to `--out`. It reports clear errors for a missing `Cargo.toml`, a missing
-toolchain (`cargo`), or a missing target (`rustup target add
-wasm32-unknown-unknown`).
+`cargo build --target wasm32-unknown-unknown --release`, copies the resulting
+`.wasm` to `--out`, and componentizes it. It reports clear errors for a missing
+`Cargo.toml`, a missing toolchain (`cargo`), or a missing target (`rustup target
+add wasm32-unknown-unknown`). (Pass the **leaf** crate directory as `--entry`;
+Cargo workspaces share a target dir.)
 
-`--lang go|typescript|python` are recognised but not yet wired — only Rust is
-implemented today. (Pass the **leaf** crate directory as `--entry`; Cargo
-workspaces share a target dir.)
+`--lang go` compiles the package with `GOOS=wasip1 GOARCH=wasm go build`.
+`--lang typescript|python` are recognised but not yet wired.
+
+### Streaming inference (`--inference`)
+
+`--inference` builds the streaming-inference variant (async `run` draining
+`inference.complete`'s `stream<string>`). For **Rust** the world is selected in
+the crate's `wit_bindgen::generate!`, so the build command is unchanged. For
+**Go** it uses the currently-unreleased toolchain (see
+`examples/component-quickstart-go/inference`):
+
+```bash
+dart run bin/hqplugin.dart build --lang go --inference \
+  --entry path/to/go-plugin \
+  --wit ../sdks/go/wit \                     # or $HQ_PLUGIN_WIT — defines hellohq-plugin-inference
+  --go /path/to/go-wasi-on-idle/bin/go \     # or $HQ_GO_WASI_ON_IDLE (dicej/go fork)
+  --adapter /path/to/wasi_snapshot_preview1.reactor.wasm  # or $HQ_WASI_ADAPTER
+```
+
+It compiles the `wasip1` core with the fork (`-buildmode=c-shared`), embeds the
+WIT against the `hellohq-plugin-inference` world, and adapts it into a Component.
+Each required input has a clear error if missing. Plain `go` compiles but the
+component traps at runtime in the stream wait, so the fork is required.
 
 ## `publish`
 

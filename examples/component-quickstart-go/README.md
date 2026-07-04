@@ -16,6 +16,11 @@ It touches only `workspace` / `storage` / `events` / `log`, so the built
 component imports only those `hellohq:plugin/*@0.1.0` interfaces (+ `types`),
 plus the WASI-0.2 imports TinyGo's runtime needs.
 
+This is the **sync** Go plugin. For the **streaming-inference** variant (async
+`run` draining `inference.complete`'s `stream<string>`), see
+[`inference/`](inference) — it uses a separate build world + toolchain because
+the sync TinyGo/`wit-bindgen-go` path can't drain a stream.
+
 ## Build
 
 ```bash

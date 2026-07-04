@@ -1,0 +1,3 @@
+# Fetched toolchain (Go fork, preview1 adapter, wit-bindgen) + build outputs.
+.toolchain/
+*.component.wasm

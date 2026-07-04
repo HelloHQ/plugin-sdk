@@ -12,9 +12,11 @@
 // plugin that touches only `storage` imports only `storage` (+ `types`).
 //
 // This package is built against the supplementary `hellohq-plugin-component`
-// world (canonical interfaces MINUS `inference`); see wit/component.wit and
-// the package README for why `inference` (WASI-0.3 `stream<string>`) is
-// currently omitted from the Go path.
+// world (canonical interfaces MINUS `inference`): the wit-bindgen-go
+// `cm.Stream` has no read API, so this (TinyGo) path cannot drain
+// `inference.complete`'s `stream<string>`. Streaming inference uses a separate
+// world + toolchain — see wit/component.wit (`hellohq-plugin-inference`) and
+// examples/component-quickstart-go/inference.
 package hq
 
 import (

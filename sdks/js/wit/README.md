@@ -55,11 +55,33 @@ internal error: entered unreachable code
 ```
 
 componentize-js 0.21.0 / StarlingMonkey does not yet support WASI-0.3 `stream`
-types. `component.wit` omits the `inference` import so the stream type never
-reaches the splicer, while keeping every other interface's canonical identity.
-This is the JS analogue of the Rust SDK's sync/async split (Rust's canonical
-`guest.run` is also sync and cannot drain the stream; it ships a separate
-`inference-quickstart` world).
+types in its binding generator. `component.wit` omits the `inference` import so
+the stream type never reaches the splicer, while keeping every other interface's
+canonical identity. This is the JS analogue of the Rust SDK's sync/async split
+(Rust's canonical `guest.run` is also sync and cannot drain the stream; it ships
+a separate `inference-quickstart` world). The SDK also defines a parallel
+`hellohq-plugin-inference` world (async `run`) for the day this unblocks.
 
-When componentize-js gains `stream` support, JS plugins can target the canonical
-`hellohq-plugin` world directly and `component.wit` can be removed.
+**Verified on the unreleased toolchain.** Streaming inference is not vaporware —
+it has been built and run end-to-end against the `hellohq-plugin-inference` world
+using [`dicej/componentize-js`](https://github.com/dicej/componentize-js), a
+Rust + mozjs + wit-dylib reboot of ComponentizeJS that supports streams/futures.
+A JS plugin that calls `inference.complete` and drains the returned
+`stream<string>` componentized successfully and ran on a component-model-async
+host, returning the streamed completion. It needs:
+
+- a **Linux** build (the macOS `mozjs`/SpiderMonkey cross-build links host tools
+  with the wasm linker and fails); WASI-SDK 30 + a `libclang` ≥ 19 for bindgen;
+- one upstream fix — `dicej/componentize-js`'s `pop_record` pushes record fields
+  in forward order while `pop_tuple` pushes reverse, so record args lower
+  reversed (crashes on an `option` none read as a numeric field). Mirroring
+  `pop_tuple` (reverse the push) fixes it.
+
+The JS `stream<T>` runtime side also already ships separately in
+[`@bytecodealliance/preview3-shim`](https://github.com/bytecodealliance/jco/tree/main/packages/preview3-shim).
+So JS is exactly where Go was before its spike: real and working, just not in a
+published release (the pinned `componentize-js 0.21.0` still crashes on `stream`).
+
+When a componentize-js release ships `stream` support, JS plugins can target the
+`hellohq-plugin-inference` world (or the canonical `hellohq-plugin`) directly and
+`component.wit` can be removed.
