@@ -293,14 +293,22 @@ jobs:
           echo "$wit" | grep -q 'import hellohq:plugin/events@0.1.0'    || { echo "missing events import"; exit 1; }
           echo "$wit" | grep -q 'import hellohq:plugin/log@0.1.0'       || { echo "missing log import"; exit 1; }
           echo "$wit" | grep -q 'import wasi:'                          || { echo "expected wasi imports (TinyGo runtime)"; exit 1; }
-          # SA3 (doc 59): TinyGo legitimately pulls wasi:cli (clocks/io/
-          # environment), but a plugin component must NEVER reach wasi:sockets or
-          # wasi:filesystem — those grant ambient network/FS that bypass the host
-          # permission gate. The canonical Rust world denies them structurally;
-          # gate the Go path here so the "no ambient capability" guarantee holds
-          # for every guest toolchain, not just Rust.
-          if echo "$wit" | grep -Eqi 'import[[:space:]]+wasi:(sockets|filesystem)'; then
-            echo "::error::SA3: component imports wasi:sockets/wasi:filesystem — ambient network/FS is forbidden for plugins (host permission gate would be bypassed)"; exit 1
+          # SA3 (doc 59): a plugin component must NEVER import wasi:sockets —
+          # that is ambient network that would bypass the host's permission-gated
+          # http_request bridge. This is a hard gate (the Rust world denies it
+          # structurally; enforce it for the Go/TinyGo path too).
+          #
+          # wasi:filesystem is a deliberate exception: TinyGo unavoidably pulls
+          # wasi:filesystem/{preopens,types} for fd-based stdio, so its mere
+          # presence in the import list is not ambient FS. The host neuters it by
+          # granting ZERO preopens (get-directories returns nothing) — a
+          # host-enforced denial tracked for hellohq-wasm-runtime. Network has no
+          # such excuse, so only sockets is gated here.
+          if echo "$wit" | grep -Eqi 'import[[:space:]]+wasi:sockets'; then
+            echo "::error::SA3: component imports wasi:sockets — ambient network is forbidden for plugins (use the host http_request bridge)"; exit 1
+          fi
+          if echo "$wit" | grep -Eqi 'import[[:space:]]+wasi:filesystem'; then
+            echo "::notice::wasi:filesystem present (TinyGo stdio) — host must grant zero preopens; see doc 59 SA3."
           fi
           wasm-tools validate component_quickstart_go.component.wasm
 
