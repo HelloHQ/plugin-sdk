@@ -30,7 +30,18 @@ class _BuildCommand extends Command<int> {
     argParser
       ..addOption('lang', allowed: ['rust', 'go', 'typescript', 'python'])
       ..addOption('entry', help: 'Entry source file.')
-      ..addOption('out', defaultsTo: 'plugin.wasm');
+      ..addOption('out', defaultsTo: 'plugin.wasm')
+      ..addFlag('inference',
+          negatable: false,
+          help: 'Build the streaming-inference variant (async `run`). For '
+              '--lang go this uses the wasi-on-idle Go fork + preview1 adapter '
+              '(\$HQ_GO_WASI_ON_IDLE / --go, \$HQ_PLUGIN_WIT / --wit, '
+              '\$HQ_WASI_ADAPTER / --adapter).')
+      ..addOption('wit',
+          help: 'WIT dir defining the inference world (go --inference).')
+      ..addOption('adapter',
+          help: 'preview1 reactor adapter path (go --inference).')
+      ..addOption('go', help: 'Path to a wasi-on-idle Go (go --inference).');
   }
 
   @override
@@ -39,6 +50,10 @@ class _BuildCommand extends Command<int> {
       lang: argResults?['lang'] as String?,
       entry: argResults?['entry'] as String?,
       out: argResults?['out'] as String? ?? 'plugin.wasm',
+      inference: argResults?['inference'] as bool? ?? false,
+      wit: argResults?['wit'] as String?,
+      adapter: argResults?['adapter'] as String?,
+      goBin: argResults?['go'] as String?,
     );
   }
 }

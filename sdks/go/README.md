@@ -83,16 +83,30 @@ The generated record types (`PortfolioName`, `CurrencyRate`, `SheetSummary`,
 `hq` package under stable names. The raw wit-bindgen-go bindings live in
 `internal/bindings/` (escape hatch; most plugins never touch them).
 
-## Inference is omitted (for now)
+## Two modes: sync (default) and streaming inference
 
-The canonical world imports `inference`, whose
-`complete: func(..) -> result<stream<string>, api-error>` uses WASI-0.3
-`stream`. **wit-bindgen-go v0.7.0 + TinyGo 0.41 cannot bind that `stream`**, so
-the Go SDK builds against a supplementary world that imports the same
-`hellohq:plugin/*@0.1.0` interfaces **minus `inference`** — exactly like the JS
-SDK's `hellohq-plugin-component` world and the Rust SDK's sync-`run` split.
-Interface identities are unchanged. When the toolchain gains WASI-0.3 `stream`
-support, the Go path can add `inference` back. See `wit/component.wit`.
+Like the Rust SDK, the Go SDK offers **both** a sync path and an async
+streaming-inference path. Plain plugins use the sync `guest` export; only
+inference-consuming plugins need async.
+
+**Sync (this `hq` package + TinyGo).** The canonical world imports `inference`,
+whose `complete: func(..) -> result<stream<string>, api-error>` returns a WASI-0.3
+`stream`. wit-bindgen-go *generates* and TinyGo *builds* a guest that imports
+`inference` — but the generated `go.bytecodealliance.org/cm` `cm.Stream[T]` has
+**no read API**, so this path cannot drain the token stream. The sync build
+worlds therefore omit `inference` and export the canonical sync `guest` (exactly
+like the JS SDK's `hellohq-plugin-component` world and the Rust SDK's
+`quickstart` world). Interface identities are unchanged.
+
+**Streaming inference (separate world + toolchain).** Draining `stream<string>`
+from Go works via the `hellohq-plugin-inference` world (async `run`), built with
+the `bytecodealliance/wit-bindgen` Go backend (readable `StreamReader[string]`)
++ a wasi-on-idle Go runtime + the preview1 reactor adapter — see
+[`examples/component-quickstart-go/inference`](../../examples/component-quickstart-go/inference).
+This has been verified end-to-end against a component-model-async host. Those
+toolchain pieces are currently unreleased (pinned git revs + a Go fork), so the
+sync path stays the default; when they ship, the streaming build collapses to
+roughly the size of the sync one. See `wit/component.wit`.
 
 ## The host needs WASI 0.2 for Go plugins
 

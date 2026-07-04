@@ -30,13 +30,22 @@
 //
 // ── Streaming inference ──────────────────────────────────────────────────────
 // `hq.inference.complete` is declared against the canonical WIT
-// (`-> stream<string>`, surfaced by jco as `ReadableStream<string>`). NOTE: the
-// pinned componentize-js (0.21.0) cannot yet build a component whose world
-// imports a `stream` type — see `wit/README.md`. The default build world
-// (`hellohq-plugin-component`) therefore OMITS `inference`; the helper is kept
-// here for forward-compatibility and the raw-bindings escape hatch. Building a
-// plugin that calls `hq.inference.*` will fail at `jco componentize` until the
-// engine gains stream support.
+// (`-> stream<string>`, surfaced by jco as `ReadableStream<string>`).
+//
+// The pinned componentize-js (0.21.0) crashes building a component whose world
+// imports a `stream` type, so on the RELEASED toolchain `hq.inference.*` cannot
+// be componentized — hence the default build world (`hellohq-plugin-component`)
+// OMITS `inference` and this helper is kept for forward-compatibility + the
+// raw-bindings escape hatch.
+//
+// BUT streaming inference has been verified end-to-end on the UNRELEASED stack:
+// `dicej/componentize-js` (a Rust + mozjs + wit-dylib reboot that supports
+// streams/futures) builds a JS plugin that drains `inference.complete`'s
+// `stream<string>`, and it ran against a component-model-async host returning
+// the streamed completion. It needs a Linux build (WASI-SDK 30 + libclang-19)
+// and one upstream fix (a `pop_record` field-order bug). So JS is where Go was
+// before its spike: real and working, just not in a published release. See
+// `wit/README.md`.
 
 import { PROTOCOL_VERSION } from "./index.js";
 

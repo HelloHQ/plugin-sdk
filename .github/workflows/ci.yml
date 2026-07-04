@@ -281,6 +281,16 @@ jobs:
       - name: Install wasm-tools (Component Model toolchain)
         uses: bytecodealliance/actions/wasm-tools/setup@v1
 
+      # SA3 (doc 59): wasi-virt strips the ambient-capability imports TinyGo's
+      # runtime forces into the encode (see examples/component-quickstart-go/
+      # build.sh). Pinned by commit: TinyGo 0.41 emits wasi@0.2.0 imports and
+      # this is the last wasi-0.2.0-compatible wasi-virt rev (newer revs only
+      # support 0.2.1/0.2.3). Update the pin when TinyGo moves to wasi >= 0.2.1.
+      - name: Install wasi-virt (pinned, wasi 0.2.0)
+        run: |
+          cargo install --git https://github.com/bytecodealliance/wasi-virt \
+            --rev b662e419bb741c635c7ceceeeae02f5278dd86a4 --locked wasi-virt
+
       - name: Build component-quickstart-go -> component
         working-directory: examples/component-quickstart-go
         run: |
@@ -293,6 +303,19 @@ jobs:
           echo "$wit" | grep -q 'import hellohq:plugin/events@0.1.0'    || { echo "missing events import"; exit 1; }
           echo "$wit" | grep -q 'import hellohq:plugin/log@0.1.0'       || { echo "missing log import"; exit 1; }
           echo "$wit" | grep -q 'import wasi:'                          || { echo "expected wasi imports (TinyGo runtime)"; exit 1; }
+          # SA3 (doc 59): a plugin component must NEVER import wasi:sockets
+          # (ambient network — the sanctioned path is the host's
+          # permission-gated http_request bridge) or wasi:filesystem (ambient
+          # FS). The canonical Rust world denies both structurally; for Go the
+          # build world excludes sockets and the wasi-virt pass in build.sh
+          # removes the TinyGo-runtime-forced filesystem (+environment)
+          # imports. This gates the FINAL component surface, so the "no
+          # ambient capability" guarantee holds for every guest toolchain —
+          # with no reliance on host-side neutering (zero preopens stays as
+          # defense-in-depth, not the primary control).
+          if echo "$wit" | grep -Eqi 'import[[:space:]]+wasi:(sockets|filesystem)'; then
+            echo "::error::SA3: component imports wasi:sockets/wasi:filesystem — ambient network/FS is forbidden for plugins (host permission gate would be bypassed)"; exit 1
+          fi
           wasm-tools validate component_quickstart_go.component.wasm
 
   # ── Dart CLI + Mock Host (Linux, macOS, Windows) ────────────────────────────

@@ -1,0 +1,18 @@
+diff --git a/runtime/src/lib.rs b/runtime/src/lib.rs
+index 355c359..6d62dad 100644
+--- a/runtime/src/lib.rs
++++ b/runtime/src/lib.rs
+@@ -2591,7 +2591,12 @@ impl Call for MyCall<'_> {
+     fn pop_record(&mut self, ty: wit::Record) {
+         let cx = &mut context();
+         rooted!(&in(cx) let record = self.pop().to_object());
+-        for (name, _) in ty.fields() {
++        // Push fields in REVERSE declaration order so the first field ends up on
++        // top of the LIFO value stack — mirroring `pop_tuple`. Without this,
++        // record fields are lowered reversed (e.g. {a,b} swap), which crashes on
++        // an `option` none read as a numeric field, or scrambles values.
++        let fields = ty.fields().collect::<Vec<_>>();
++        for (name, _) in fields.into_iter().rev() {
+             self.push(get(
+                 cx,
+                 record.handle(),

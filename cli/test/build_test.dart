@@ -65,6 +65,46 @@ void main() {
       expect(code, 66);
       expect(err.toString(), contains('no go.mod'));
     });
+
+    test('go --inference without the wasi-on-idle fork fails cleanly',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('hqplugin_goinf_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File(p.join(dir.path, 'go.mod'))
+          .writeAsStringSync('module testplugin\n\ngo 1.21\n');
+      final err = StringBuffer();
+      final code = await runBuild(
+        lang: 'go',
+        entry: dir.path,
+        inference: true,
+        // goBin omitted and (in CI) HQ_GO_WASI_ON_IDLE unset → required-tool error.
+        err_: err,
+        out_: StringBuffer(),
+      );
+      // Either the fork is missing (69) or, if the env happens to set it, the
+      // next required input (--wit, 64) is. Both are clean, non-crash errors.
+      expect(code, anyOf(69, 64));
+      expect(err.toString(), contains('--inference'));
+    });
+
+    test('go --inference reports the missing WIT dir when the fork is given',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('hqplugin_goinf2_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File(p.join(dir.path, 'go.mod'))
+          .writeAsStringSync('module testplugin\n\ngo 1.21\n');
+      final err = StringBuffer();
+      final code = await runBuild(
+        lang: 'go',
+        entry: dir.path,
+        inference: true,
+        goBin: '/usr/bin/true', // stand-in; resolution happens before exec
+        err_: err,
+        out_: StringBuffer(),
+      );
+      expect(code, 64); // missing --wit
+      expect(err.toString(), contains('WIT dir is required'));
+    });
   });
 
   group('runBuild — real Go build (needs go toolchain)', () {
