@@ -360,9 +360,16 @@ jobs:
 
       # The CLI's sidecar tests (test/sidecar_test.dart) spawn a Python sidecar,
       # so Python must be available on the runner.
+      #
+      # This job never runs `uv sync`, so on runners where the sidecar tests
+      # don't drive a uv install (Windows) nothing populates the uv cache and
+      # setup-uv's post-run save fails the job with "Cache path ... does not
+      # exist on disk". Tolerate the empty case while keeping the cache on
+      # runners that do populate it.
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.12'
+          ignore-nothing-to-cache: true
 
       - name: Cache Dart pub
         uses: actions/cache@v4
@@ -448,9 +455,12 @@ jobs:
           sdk: '3.4'
 
       # Tier-1 sidecar e2e (below) spawns a Python plugin.
+      # Same "nothing to cache" guard as the CLI job above — this job doesn't
+      # `uv sync` either.
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.12'
+          ignore-nothing-to-cache: true
 
       - name: Cache Dart pub
         uses: actions/cache@v4
