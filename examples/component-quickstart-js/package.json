@@ -15,5 +15,10 @@
     "@bytecodealliance/jco": "^1.24.1",
     "esbuild": "^0.28.0",
     "typescript": "^5.4.0"
+  },
+  "overrides": {
+    "decompress": "npm:@xhmikosr/decompress@^11.1.3",
+    "decompress-tar": "npm:@xhmikosr/decompress-tar@^9.0.1",
+    "decompress-unzip": "npm:@xhmikosr/decompress-unzip@^8.1.1"
   }
 }
