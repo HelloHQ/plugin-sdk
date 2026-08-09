@@ -41,8 +41,8 @@
     "webview"
   ],
   "devDependencies": {
-    "@bytecodealliance/componentize-js": "^0.21.0",
-    "@bytecodealliance/jco": "^1.24.1",
+    "@bytecodealliance/componentize-js": "^0.22.0",
+    "@bytecodealliance/jco": "^1.27.0",
     "typescript": "^5.4.0"
   },
   "overrides": {
