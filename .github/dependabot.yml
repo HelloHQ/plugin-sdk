@@ -1,0 +1,99 @@
+version: 2
+
+# Dependabot VERSION updates. Security updates are a separate, repo-level
+# setting (`automated-security-fixes`) and are already on — this file does not
+# control them and cannot turn them off.
+#
+# Added 2026-08-09 when Renovate was removed org-wide.
+#
+# This repo has 19 manifests across five languages. Only eight are watched, and
+# the split is deliberate: the three published SDKs, the CLI, the mock host and
+# the streaming toolchain are code other people depend on. The eleven under
+# examples/ are demonstrations — bumping them costs review time every week and
+# protects nobody, because nothing ships from them.
+#
+# Watched:   sdks/go, sdks/js, sdks/rust, cli, mock-host, toolchain/streaming
+# Unwatched: examples/** (11 manifests: Cargo, package.json, go.mod, ui/)
+#
+# If an example ever becomes a supported artifact, add it here then.
+
+updates:
+  # ── Published SDKs ───────────────────────────────────────────────────────
+  - package-ecosystem: gomod
+    directory: "/sdks/go"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      go-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: npm
+    directory: "/sdks/js"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      js-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: cargo
+    directory: "/sdks/rust"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      rust-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # ── Dart tooling: the CLI and the mock host used by plugin authors ───────
+  - package-ecosystem: pub
+    directory: "/cli"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      dart-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: pub
+    directory: "/mock-host"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      dart-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # ── Build toolchain ─────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: "/toolchain/streaming"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      docker-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["deps"]
+    groups:
+      actions-minor-and-patch:
+        update-types: ["minor", "patch"]
