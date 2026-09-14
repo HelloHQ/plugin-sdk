@@ -20,7 +20,7 @@ crate-type = ["rlib"]
 # wit-bindgen's `async` runtime — but we keep `default-features = false` (no
 # std) plus only `macros` + `async`, so a guest stays `#![no_std]` and the built
 # component imports only `hellohq:plugin/*` (no `wasi:*`).
-wit-bindgen = { version = "0.58.0", default-features = false, features = ["macros", "async"] }
+wit-bindgen = { version = "0.62.0", default-features = false, features = ["macros", "async"] }
 
 # Guest global allocator wired by the `setup_guest!` macro (re-exported).
 dlmalloc = { version = "0.2", features = ["global"] }
