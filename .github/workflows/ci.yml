@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -366,7 +366,7 @@ jobs:
       # setup-uv's post-run save fails the job with "Cache path ... does not
       # exist on disk". Tolerate the empty case while keeping the cache on
       # runners that do populate it.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
           ignore-nothing-to-cache: true
@@ -457,7 +457,7 @@ jobs:
       # Tier-1 sidecar e2e (below) spawns a Python plugin.
       # Same "nothing to cache" guard as the CLI job above — this job doesn't
       # `uv sync` either.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
           ignore-nothing-to-cache: true
