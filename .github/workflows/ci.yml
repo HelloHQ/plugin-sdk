@@ -157,7 +157,7 @@ jobs:
           if echo "$wit" | grep -qi 'wasi:'; then echo "stray wasi import"; exit 1; fi
 
       # Upload the reference wasm for the e2e matrix jobs.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: portfolio-overview-wasm
           path: examples/portfolio_overview/target/wasm32-unknown-unknown/release/portfolio_overview.wasm
