@@ -356,7 +356,7 @@ jobs:
 
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: '3.4'
+          sdk: '3.8'
 
       # The CLI's sidecar tests (test/sidecar_test.dart) spawn a Python sidecar,
       # so Python must be available on the runner.
@@ -452,7 +452,7 @@ jobs:
 
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: '3.4'
+          sdk: '3.8'
 
       # Tier-1 sidecar e2e (below) spawns a Python plugin.
       # Same "nothing to cache" guard as the CLI job above — this job doesn't
