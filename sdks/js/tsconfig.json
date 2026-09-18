@@ -7,6 +7,9 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    // TypeScript 7 stops inferring the common source directory (TS5011).
+    // "src" is what it inferred before, so the dist layout is unchanged.
+    "rootDir": "src",
     "outDir": "dist",
     "lib": ["DOM", "ES2020"],
     "skipLibCheck": true
