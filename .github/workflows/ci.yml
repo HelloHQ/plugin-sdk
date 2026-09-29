@@ -494,7 +494,7 @@ jobs:
       # Download into _wasm/ (workspace-relative) so the path is a plain
       # relative string that works identically on all three OSes.
       - name: Download portfolio_overview.wasm
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: portfolio-overview-wasm
           path: _wasm
