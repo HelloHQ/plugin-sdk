@@ -1,0 +1,218 @@
+{
+  "schema": "hellohq.report-pack/2",
+  "generated_at": "2026-10-04T12:00:30Z",
+  "data_status": "partial",
+  "portfolios": [
+    {
+      "id": "ptf_home",
+      "name": "Family Home",
+      "asset_items": 2,
+      "liability_items": 1,
+      "currencies": [
+        "CNY",
+        "SGD"
+      ],
+      "totals": [],
+      "totals_status": "liabilities"
+    },
+    {
+      "id": "ptf_invest",
+      "name": "Investments",
+      "asset_items": 5,
+      "liability_items": 0,
+      "currencies": [
+        "JPY",
+        "SGD",
+        "USD"
+      ],
+      "totals": [
+        {
+          "currency": "JPY",
+          "amount": "3500000"
+        },
+        {
+          "currency": "SGD",
+          "amount": "98000.0"
+        },
+        {
+          "currency": "USD",
+          "amount": "215340.126"
+        }
+      ],
+      "totals_status": "shown"
+    },
+    {
+      "id": "ptf_biz",
+      "name": "Chen & Sons Trading",
+      "asset_items": null,
+      "liability_items": null,
+      "currencies": [
+        "USD"
+      ],
+      "totals": [],
+      "totals_status": "unclassified"
+    },
+    {
+      "id": "ptf_cash",
+      "name": "Cash Savings",
+      "asset_items": 2,
+      "liability_items": 0,
+      "currencies": [
+        "SGD",
+        "USD"
+      ],
+      "totals": [
+        {
+          "currency": "SGD",
+          "amount": "42000.0"
+        },
+        {
+          "currency": "USD",
+          "amount": "1500.25"
+        }
+      ],
+      "totals_status": "shown"
+    },
+    {
+      "id": "ptf_new",
+      "name": "New Portfolio",
+      "asset_items": 0,
+      "liability_items": 0,
+      "currencies": [],
+      "totals": [],
+      "totals_status": "empty"
+    }
+  ],
+  "summary": {
+    "portfolio_count": 5,
+    "portfolios_with_totals": 2,
+    "portfolios_withheld": 2,
+    "currency_count": 4
+  },
+  "combined_totals": [
+    {
+      "currency": "JPY",
+      "total_assets": "3500000",
+      "portfolio_count": 1,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        }
+      ]
+    },
+    {
+      "currency": "SGD",
+      "total_assets": "140000.0",
+      "portfolio_count": 2,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        },
+        {
+          "id": "ptf_cash",
+          "name": "Cash Savings"
+        }
+      ]
+    },
+    {
+      "currency": "USD",
+      "total_assets": "216840.376",
+      "portfolio_count": 2,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        },
+        {
+          "id": "ptf_cash",
+          "name": "Cash Savings"
+        }
+      ]
+    }
+  ],
+  "currency_exposure": [
+    {
+      "currency": "CNY",
+      "portfolio_count": 1,
+      "portfolios": [
+        {
+          "id": "ptf_home",
+          "name": "Family Home"
+        }
+      ]
+    },
+    {
+      "currency": "JPY",
+      "portfolio_count": 1,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        }
+      ]
+    },
+    {
+      "currency": "SGD",
+      "portfolio_count": 3,
+      "portfolios": [
+        {
+          "id": "ptf_home",
+          "name": "Family Home"
+        },
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        },
+        {
+          "id": "ptf_cash",
+          "name": "Cash Savings"
+        }
+      ]
+    },
+    {
+      "currency": "USD",
+      "portfolio_count": 3,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        },
+        {
+          "id": "ptf_biz",
+          "name": "Chen & Sons Trading"
+        },
+        {
+          "id": "ptf_cash",
+          "name": "Cash Savings"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    {
+      "code": "basis"
+    },
+    {
+      "code": "app_differs"
+    },
+    {
+      "code": "asof"
+    },
+    {
+      "code": "currency"
+    },
+    {
+      "code": "rounding"
+    },
+    {
+      "code": "liabilities",
+      "n": 1
+    },
+    {
+      "code": "unclassified",
+      "n": 1
+    }
+  ]
+}

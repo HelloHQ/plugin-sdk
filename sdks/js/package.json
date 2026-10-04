@@ -23,6 +23,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/hqhost.test.mjs",
     "gen:types": "jco guest-types wit/ -n hellohq-plugin -o src/generated --all-features",
     "sync:wit": "./scripts/sync-wit.sh"
   },
