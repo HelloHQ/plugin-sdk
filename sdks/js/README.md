@@ -166,7 +166,33 @@ host.on("computation-complete", (payload) => updateChart(payload));
 The WebView talks only to the host via the injected, validated `HQBridge` — it
 cannot reach the network (CSP `connect-src 'none'`) or the Wasm binary directly.
 
-> **Status:** typed surface is stable; transport wiring lands with the WebView
-> host (Phase 6). Calls currently reject with a "not yet wired" error.
+**Transport.** The HelloHQ app injects `window.HQBridge` with typed methods
+(`read`, `compute`, `writeExternal`, `log`; see
+`plugin_webview_init_script.dart` in the app). `HQHost` calls them whenever
+they are present and maps a rejection to `HQPermissionError`
+(`permission_denied`) or `HQHostError` (`code` = `bad_request`,
+`compute_error`, `internal`). A bridge exposing only `postMessage` (dev
+harnesses) still works through the legacy message transport.
+
+**`writeExternal(name, content)`** (`write:external_output`, Verified, WebView
+only) sends `{ action: "write_external", payload: { suggested_filename,
+content_base64 } }`. A string is encoded as UTF-8 without a BOM; a `Uint8Array`
+is sent unchanged. It resolves `{ saved: true }`, or `{ saved: false }` when the
+person cancels the save dialog. The host's rules are checked first and reject
+with `bad_request`: the filename must be non-empty, at most 255 characters and
+contain no `/`, `\`, `..` or NUL (`writeExternalFilenameProblem`), and the
+content at most 50 MB (`MAX_WRITE_EXTERNAL_BYTES`).
+
+**`compute(fn, args)`**: the host accepts only strings, numbers, booleans and
+flat arrays of them as `args` values — no nested objects and no `null`.
+
+> **Known gap:** the `read*` methods' return types (`AggregatedSummary`,
+> `AssetCount`, `SheetSummary`) do not match the shapes the app returns
+> (`{ "portfolios": [...] }`, see `PluginDataAccessObject`).
+
+`npm test` builds the SDK and runs `test/hqhost.test.mjs`: `HQHost` against a
+verbatim copy of the app's shim (`test/fixtures/host-shim.js`) and a fake host
+that validates like the app's `PluginWebViewBridge`. Re-copy the fixture when
+the app's shim changes.
 
 Protocol: https://github.com/HelloHQ/plugin-protocol
