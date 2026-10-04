@@ -1,0 +1,26 @@
+{
+  "id": "com.hellohq.filings-companion",
+  "name": "Holdings Filings Companion",
+  "version": "0.1.0",
+  "description": "Information-only view of recent SEC filings and reported annual figures for US-listed holdings you enter. Uses SEC EDGAR and OpenFIGI, no keys.",
+  "author": "HelloHQ",
+  "author_url": "https://hellohq.io",
+  "repo": "https://github.com/HelloHQ/plugin-sdk",
+  "license": "Apache-2.0",
+  "categories": ["finance", "analytics"],
+  "min_host_version": "2.0.0",
+  "execution_mode": "sidecar",
+  "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/filings-companion-v0.1.0/plugin.py",
+  "content_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ui_type": "declarative",
+  "entry_function": "run",
+  "permissions": [
+    {
+      "id": "network:fetch",
+      "scope": {
+        "origins": ["data.sec.gov", "www.sec.gov", "api.openfigi.com"]
+      }
+    },
+    { "id": "plugin:storage" }
+  ]
+}
