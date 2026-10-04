@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --outfile=dist/ui.js && cp index.html styles.css dist/",
+    "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --legal-comments=none --outfile=dist/ui.js && cp index.html styles.css hq-bundle.json dist/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

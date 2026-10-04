@@ -23,7 +23,7 @@ interface ReportDocument {
 interface Report {
   lang: Lang;
   generated_at: string;
-  data_status: "complete" | "partial" | "no_totals" | "no_portfolios";
+  data_status: "complete" | "partial" | "withheld" | "no_totals" | "no_portfolios";
   documents: Record<Format, ReportDocument>;
 }
 
@@ -42,6 +42,8 @@ const UI: Record<Lang, Record<string, string>> = {
     cancelled: "Save cancelled. Nothing was written.",
     saveDenied: "Saving files is not permitted for this plugin.",
     error: "The report could not be prepared: {message}",
+    denied: "Permission denied: {permission}",
+    saveError: "The file could not be saved: {message}",
   },
   "zh-Hans": {
     title: "家庭会议报告",
@@ -55,6 +57,8 @@ const UI: Record<Lang, Record<string, string>> = {
     cancelled: "已取消保存，未写入任何内容。",
     saveDenied: "此插件无权保存文件。",
     error: "无法生成报告：{message}",
+    denied: "权限被拒绝：{permission}",
+    saveError: "无法保存文件：{message}",
   },
 };
 
@@ -66,6 +70,9 @@ let current: Report | null = null;
 let statusEl: HTMLElement;
 let previewEl: HTMLElement;
 let buttons: HTMLButtonElement[] = [];
+// Each load gets a number; a reply for an older load (e.g. after a quick
+// language switch) is dropped so the preview never shows the wrong language.
+let loadSeq = 0;
 
 /** zh-CN / zh-SG / zh-Hans -> Simplified Chinese; anything else -> English. */
 function initialLang(): Lang {
@@ -84,21 +91,25 @@ function t(key: string, vars: Record<string, string> = {}): string {
 }
 
 async function load(): Promise<void> {
+  const seq = ++loadSeq;
+  current = null;
   render();
   setStatus(t("loading"));
   setBusy(true);
   try {
     // Only a primitive argument: the host bridge rejects nested compute args.
-    current = await host.compute<Report>("report", { lang });
-    previewEl.textContent = current.documents.text.content;
-    setStatus(t("ready", { time: current.generated_at.slice(0, 16).replace("T", " ") }));
+    const report = await host.compute<Report>("report", { lang });
+    if (seq !== loadSeq) return;
+    current = report;
+    previewEl.textContent = report.documents.text.content;
+    setStatus(t("ready", { time: report.generated_at.slice(0, 16).replace("T", " ") }));
     buttons.forEach((b) => (b.disabled = false));
   } catch (e) {
-    current = null;
+    if (seq !== loadSeq) return;
     previewEl.textContent = "";
     renderError(e);
   } finally {
-    setBusy(false);
+    if (seq === loadSeq) setBusy(false);
   }
 }
 
@@ -110,7 +121,7 @@ async function save(format: Format): Promise<void> {
     const { saved } = await host.writeExternal(doc.filename, doc.content);
     setStatus(saved ? t("saved", { name: doc.filename }) : t("cancelled"));
   } catch (e) {
-    setStatus(e instanceof HQPermissionError ? t("saveDenied") : t("error", { message: message(e) }));
+    setStatus(e instanceof HQPermissionError ? t("saveDenied") : t("saveError", { message: message(e) }));
   } finally {
     buttons.forEach((b) => (b.disabled = false));
   }
@@ -171,7 +182,7 @@ function saveButton(labelKey: string, format: Format): HTMLButtonElement {
 function renderError(e: unknown): void {
   setStatus(
     e instanceof HQPermissionError
-      ? `Permission denied: ${e.permissionId}`
+      ? t("denied", { permission: e.permissionId })
       : t("error", { message: message(e) }),
   );
 }
