@@ -1,0 +1,102 @@
+/*
+ * Report Pack WebView UI styles. Uses HelloHQ theme variables (--hq-*) the host
+ * injects, with fallbacks so the bundle is legible when opened standalone.
+ */
+
+:root {
+  --fallback-bg: #1a1a1a;
+  --fallback-surface: #242424;
+  --fallback-text: #e8e8e8;
+  --fallback-muted: #9a9a9a;
+  --fallback-border: #3a3a3a;
+  --fallback-primary: #4c8dff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--hq-font-sans, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif);
+  color: var(--hq-text, var(--fallback-text));
+  background: var(--hq-background, var(--fallback-bg));
+}
+
+.app {
+  padding: 16px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+label {
+  color: var(--hq-text-muted, var(--fallback-muted));
+  font-size: 0.9rem;
+}
+
+select,
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--hq-border, var(--fallback-border));
+  background: var(--hq-surface, var(--fallback-surface));
+  color: inherit;
+}
+
+button {
+  border-color: var(--hq-primary, var(--fallback-primary));
+  background: var(--hq-primary, var(--fallback-primary));
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.status {
+  min-height: 1.4em;
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: var(--hq-text-muted, var(--fallback-muted));
+}
+
+.preview {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  max-height: 60vh;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--hq-font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  border: 1px solid var(--hq-border, var(--fallback-border));
+  border-radius: 6px;
+  background: var(--hq-surface, var(--fallback-surface));
+}
+
+.loading,
+.error {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--hq-text-muted, var(--fallback-muted));
+}
+
+.error {
+  color: var(--hq-danger, #ff6b6b);
+}
