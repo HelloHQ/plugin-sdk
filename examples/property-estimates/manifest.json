@@ -1,0 +1,32 @@
+{
+  "id": "com.hellohq.property-estimates",
+  "name": "Property Value Estimates",
+  "version": "0.1.0",
+  "description": "Information-only summaries of recent comparable home sales: Singapore HDB resale, England and Wales, France and Ireland. Not a valuation.",
+  "author": "HelloHQ",
+  "author_url": "https://hellohq.io",
+  "repo": "https://github.com/HelloHQ/plugin-sdk",
+  "license": "Apache-2.0",
+  "categories": ["finance", "analytics"],
+  "min_host_version": "2.0.0",
+  "execution_mode": "sidecar",
+  "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/property-estimates-v0.1.0/plugin.py",
+  "content_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ui_type": "declarative",
+  "entry_function": "run",
+  "permissions": [
+    {
+      "id": "network:fetch",
+      "scope": {
+        "origins": [
+          "data.gov.sg",
+          "landregistry.data.gov.uk",
+          "files.data.gouv.fr",
+          "geo-dvf.s3.sbg.io.cloud.ovh.net"
+        ]
+      }
+    },
+    { "id": "read:external_input", "scope": { "extensions": ["csv"] } },
+    { "id": "propose:valuations", "scope": { "kinds": ["home"] } }
+  ]
+}

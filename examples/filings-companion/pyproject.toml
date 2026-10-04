@@ -1,0 +1,21 @@
+# Local tooling config only (this example is not a published package). It also
+# keeps pytest/ruff from picking up a parent directory's pyproject.
+[project]
+name = "filings-companion-example"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
