@@ -185,6 +185,52 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+      # HQHost against a verbatim copy of the app's HQBridge shim
+      # (test/fixtures/host-shim.js): the WebView wire contract, incl.
+      # write_external.
+      - run: npm test
+
+  # ── Report Pack example (Linux only) ───────────────────────────────────────
+  # Tier-1 sidecar + WebView UI (examples/report-pack). Pure-stdlib Python and
+  # an OS-independent UI bundle, so one Linux runner covers it: unit + golden
+  # tests on the oldest and newest supported Python, the sidecar run as a real
+  # process, lint, the UI type-check + bundle via build.sh, and checks on the
+  # bundle the host loads (tests/test_build.py).
+  report-pack:
+    name: Report Pack example
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/report-pack
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+          ignore-nothing-to-cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      - name: Lint (ruff)
+        run: |
+          uvx ruff@0.16.8 check plugin.py tests
+          uvx ruff@0.16.8 format --check plugin.py tests
+
+      - name: Build plugin.py + UI bundle (ui.zip)
+        run: ./build.sh
+
+      - name: Tests (Python 3.12, with coverage; requires the built bundle)
+        env:
+          REPORT_PACK_REQUIRE_BUILD: '1'
+        run: uv run --no-project --python 3.12 --with pytest --with pytest-cov pytest --cov=plugin --cov-report=term-missing
+
+      - name: Tests (Python 3.11)
+        env:
+          REPORT_PACK_REQUIRE_BUILD: '1'
+        run: uv run --no-project --python 3.11 --with pytest pytest
 
   # ── JS SDK — componentize the example (Linux only) ─────────────────────────
   # jco/componentize-js embeds a JS engine; the built component is
@@ -519,6 +565,16 @@ jobs:
           dart run cli/bin/hqplugin.dart test \
             --sidecar examples/notes-keeper \
             --grant plugin:storage
+        shell: bash
+
+      # The CLI's mock sidecar host does not build the context snapshot yet, so
+      # this proves the report-pack sidecar starts, answers and exits cleanly
+      # on every OS (the no-portfolios report); real context is covered by
+      # examples/report-pack/tests/test_sidecar_e2e.py.
+      - name: Run report-pack through hqplugin test (Tier-1 sidecar)
+        run: |
+          dart run cli/bin/hqplugin.dart test \
+            --sidecar examples/report-pack
         shell: bash
 
   # ── Protocol version consistency (pure text; Linux only) ───────────────────
