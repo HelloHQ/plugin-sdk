@@ -6,13 +6,15 @@ Prepared 2026-10-04 12:00 UTC. Source: your HelloHQ workspace (portfolio names, 
 
 ## Summary
 
-- Portfolios included: 3.
-- Portfolios with total assets shown: 1 of 3.
-- Currencies in the recorded values: 1.
+- Portfolios included: 2.
+- Portfolios with total assets shown: 2 of 2.
+- Currencies in the recorded values: 3.
 
 Combined total assets by currency, for portfolios with no recorded liabilities (amounts in different currencies are never added together or converted):
 
-- USD 1,000.00: 1 portfolio (Personal). Read at 2026-10-04 12:00 UTC.
+- EUR 99.99: 1 portfolio (Business). Read at 2026-10-04 12:00 UTC.
+- SGD 250.50: 1 portfolio (Personal). Read at 2026-10-04 12:00 UTC.
+- USD 3,000.00: sum of 2 portfolios (Personal, Business). Read at 2026-10-04 12:00 UTC.
 
 ## Total assets by portfolio
 
@@ -20,9 +22,10 @@ One row per portfolio and currency where an amount is shown. Source: HelloHQ wor
 
 | Portfolio | Currency | Total assets | Read at (UTC) |
 | --- | --- | ---: | --- |
+| Personal | SGD | 250.50 | 2026-10-04 12:00 |
 | Personal | USD | 1,000.00 | 2026-10-04 12:00 |
-| Business | — | Not available | — |
-| Archive | — | No recorded values | 2026-10-04 12:00 |
+| Business | EUR | 99.99 | 2026-10-04 12:00 |
+| Business | USD | 2,000.00 | 2026-10-04 12:00 |
 
 ## Currency exposure
 
@@ -30,7 +33,9 @@ Which currencies the recorded values are in, and which portfolios have values in
 
 | Currency | Portfolios | Portfolio names |
 | --- | ---: | --- |
-| USD | 1 | Personal |
+| EUR | 1 | Business |
+| SGD | 1 | Personal |
+| USD | 2 | Personal, Business |
 
 ## Notes and disclaimer
 
@@ -39,6 +44,5 @@ Which currencies the recorded values are in, and which portfolios have values in
 - “Read at” is the time this report read your workspace (UTC). Each value inside a total was recorded on its own date, which plugins cannot see, so a total can include values recorded long before this time.
 - Currencies are shown as recorded. Amounts in different currencies are not added together or converted.
 - Amounts are rounded half to even to the usual number of decimal places of each currency for display. Combined totals are added before rounding, so rounded rows may not add up exactly to them.
-- A total is not available for 1 portfolio. Nothing has been estimated or filled in.
 
 Disclaimer: this report is for information only. It is not financial, investment, tax or legal advice and does not recommend any action. Figures are the values recorded in your HelloHQ workspace and have not been independently verified.

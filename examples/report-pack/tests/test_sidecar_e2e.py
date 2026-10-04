@@ -75,7 +75,7 @@ def test_sidecar_process_produces_the_report(lang: str) -> None:
     (reply,) = run_sidecar(fx.FAMILY, {"function": "report", "args": {"lang": lang}})
     assert reply["id"] == 1 and "error" not in reply
     result = reply["result"]
-    assert result["lang"] == lang and result["data_status"] == "complete"
+    assert result["lang"] == lang and result["data_status"] == "partial"
     # The clock is real here: compare everything except the timestamp.
     expected = plugin.generate(fx.FAMILY, lang, now=fx.NOW)
     stamp = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d(:\d\dZ)?")
@@ -87,6 +87,16 @@ def test_sidecar_process_produces_the_report(lang: str) -> None:
     # Non-ASCII survives the NDJSON pipe intact.
     if lang == "zh-Hans":
         assert "家庭会议报告" in result["documents"]["markdown"]["content"]
+
+
+def test_withheld_amounts_never_cross_the_pipe() -> None:
+    # The mortgaged home's SGD 1,250,000 / CNY 480,000.5 and the unclassified
+    # business's USD 48,000 must not reach the WebView in any form.
+    (reply,) = run_sidecar(fx.FAMILY, {"function": "report", "args": {"lang": "en"}})
+    wire = json.dumps(reply)
+    for amount in ("1250000", "1,250,000", "480000", "480,000", "48000.0", "48,000"):
+        assert amount not in wire, amount
+    assert fx.SGD not in wire and fx.USD not in wire  # ids never shown, only codes
 
 
 def test_sidecar_handles_a_denied_context_and_repeat_calls() -> None:
@@ -129,7 +139,11 @@ def test_dispatch_through_the_sdk_serve_loop_in_process() -> None:
 
 
 def test_bridge_argument_rules_hold_for_the_ui_call() -> None:
-    # The host rejects compute args that are not JSON primitives / flat arrays;
-    # the only argument this plugin takes is the language string.
-    args = {"lang": "zh-Hans"}
-    assert all(isinstance(v, (str, int, float, bool)) for v in args.values())
+    # The host bridge rejects compute args that are not strings, numbers,
+    # booleans or flat arrays of them (null included); the UI sends only the
+    # language string. The bridge then hands the sidecar
+    # input = {"function": fn, "args": args} under args["input"].
+    ui_args = {"lang": "zh-Hans"}
+    assert all(isinstance(v, str) for v in ui_args.values())
+    (reply,) = run_sidecar(fx.FAMILY, {"function": "report", "args": ui_args})
+    assert reply["result"]["lang"] == "zh-Hans"

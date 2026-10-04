@@ -2,7 +2,7 @@
   "id": "io.github.hellohq.report-pack",
   "name": "Family Meeting Report Pack",
   "version": "1.0.0",
-  "description": "Family-meeting report of portfolio totals by portfolio and currency, in English and Simplified Chinese. Saves a Markdown, text or HTML file. Information only.",
+  "description": "Family-meeting report of total assets by portfolio and currency, in English and Simplified Chinese. Saves a Markdown, text or HTML file. Information only.",
   "author": "HelloHQ",
   "author_url": "https://hellohq.io",
   "repo": "https://github.com/HelloHQ/plugin-sdk",
@@ -17,8 +17,10 @@
   "ui_bundle_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "entry_function": "run",
   "permissions": [
-    { "id": "read:portfolio_names" },
-    { "id": "read:aggregated_values" },
-    { "id": "write:external_output" }
+    { "id": "read:portfolio_names", "reason": "Name each portfolio in the report." },
+    { "id": "read:asset_count", "reason": "Tell portfolios with liabilities apart, so their mixed totals are not shown as assets." },
+    { "id": "read:currency_rates", "reason": "Show each total's currency code. The rates are never used; nothing is converted." },
+    { "id": "read:aggregated_values", "reason": "The per-portfolio, per-currency totals the report shows." },
+    { "id": "write:external_output", "reason": "Save the report you choose through the system save dialog." }
   ]
 }
