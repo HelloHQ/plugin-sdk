@@ -102,6 +102,16 @@ declare global {
   }
 }
 
+/** Base64 of raw bytes (chunked so large files do not overflow the call stack). */
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HQHost
 // ─────────────────────────────────────────────────────────────────────────────
@@ -165,6 +175,26 @@ export class HQHost {
   /** Invoke the plugin's Wasm binary through the host. */
   compute<T>(fn: string, args: unknown): Promise<T> {
     return this.request<T>("compute", { function: fn, args });
+  }
+
+  /**
+   * Save a file through the OS save dialog. Requires write:external_output
+   * (Verified tier).
+   *
+   * The person picks the destination; the plugin never learns the path.
+   * Resolves `{ saved: true }` once written, or `{ saved: false }` if the person
+   * cancelled the dialog. The host rejects filenames containing a path separator
+   * or `..`, and content larger than 50 MB. A string is encoded as UTF-8.
+   */
+  writeExternal(
+    suggestedFilename: string,
+    content: string | Uint8Array,
+  ): Promise<{ saved: boolean }> {
+    const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+    return this.request<{ saved: boolean }>("write_external", {
+      suggested_filename: suggestedFilename,
+      content_base64: toBase64(bytes),
+    });
   }
 
   /** Subscribe to a push event emitted by the Wasm binary / sidecar. */

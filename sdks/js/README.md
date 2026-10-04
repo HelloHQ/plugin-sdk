@@ -158,6 +158,7 @@ const host = new HQHost();
 const portfolios = await host.readPortfolioNames();
 const summary = await host.readAggregatedValues(portfolios[0].id);
 const rows = await host.compute("compute_shares", { rows: [...] });
+const { saved } = await host.writeExternal("report.md", markdown); // OS save dialog; write:external_output
 
 host.on("computation-complete", (payload) => updateChart(payload));
 ```
