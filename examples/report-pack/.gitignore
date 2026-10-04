@@ -1,0 +1,8 @@
+# Build outputs (regenerate with ./build.sh)
+/ui.zip
+/ui/node_modules
+/ui/dist
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+__pycache__/
