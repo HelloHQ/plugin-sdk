@@ -139,4 +139,79 @@ void main() {
     expect(h.emittedEvents, hasLength(1));
     expect(h.emittedEvents.first.name, 'shares-ready');
   });
+
+  group('MockSidecarHost http_request', () {
+    Map<String, dynamic> fetch(
+      MockNetworkCallback cb, {
+      Map<String, dynamic> headers = const {},
+    }) =>
+        jsonDecode(MockSidecarHost(granted: ['network:fetch'], onNetworkFetch: cb)
+            .handleLine(jsonEncode({
+          'type': 'http_request',
+          'seq': 7,
+          'method': 'GET',
+          'url': 'https://api.example.com/x',
+          'headers': headers,
+        }))!) as Map<String, dynamic>;
+
+    test('a UTF-8 body is sent as text with no body_encoding', () {
+      final r = fetch((_) => {'status': 200, 'body': utf8.encode('Zoë €1')});
+      expect(r['seq'], 7);
+      expect(r['body'], 'Zoë €1');
+      expect(r.containsKey('body_encoding'), isFalse);
+    });
+
+    test('a String body is passed through unchanged', () {
+      final r = fetch((_) => {'status': 200, 'body': '{"ok":true}'});
+      expect(r['body'], '{"ok":true}');
+      expect(r.containsKey('body_encoding'), isFalse);
+    });
+
+    test('non-UTF-8 bytes are sent base64 with body_encoding', () {
+      final bytes = [for (var i = 0; i < 256; i++) i];
+      final r = fetch((_) => {'status': 200, 'body': bytes});
+      expect(r['body_encoding'], 'base64');
+      expect(base64Decode(r['body'] as String), bytes);
+    });
+
+    test('an explicit body_encoding on a String body is passed through', () {
+      final r = fetch((_) => {'status': 200, 'body': 'AAE=', 'body_encoding': 'base64'});
+      expect(r['body'], 'AAE=');
+      expect(r['body_encoding'], 'base64');
+    });
+
+    test('only allowlisted request headers reach the callback', () {
+      Map<String, dynamic>? seen;
+      fetch(
+        (req) {
+          seen = req;
+          return {'status': 200, 'body': ''};
+        },
+        headers: {
+          'Accept': 'application/json',
+          'If-None-Match': '"v1"',
+          'Authorization': 'Bearer t',
+          'User-Agent': 'x',
+          'X-API-Key': 'k',
+        },
+      );
+      expect(seen!['headers'], {'accept': 'application/json', 'if-none-match': '"v1"'});
+    });
+
+    test('Set-Cookie is stripped from the response', () {
+      final r = fetch((_) => {
+            'status': 200,
+            'headers': {'Set-Cookie': 'a=b', 'content-type': 'text/plain'},
+            'body': '',
+          });
+      expect(r['headers'], {'content-type': 'text/plain'});
+    });
+
+    test('denied without network:fetch', () {
+      final r = jsonDecode(MockSidecarHost().handleLine(jsonEncode(
+              {'type': 'http_request', 'seq': 1, 'method': 'GET', 'url': 'https://x'}))!)
+          as Map<String, dynamic>;
+      expect(r['error_code'], 'permission_denied');
+    });
+  });
 }

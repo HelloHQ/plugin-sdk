@@ -38,15 +38,22 @@ network:fetch (requires network:fetch permission, Verified tier, Tier 1 only)::
                     "headers":{},"body":""}
     host → plugin: {"type":"http_response","seq":N,"status":200,
                     "headers":{},"body":"…"}
+    host → plugin: {"type":"http_response","seq":N,"status":200,
+                    "headers":{},"body":"<base64>","body_encoding":"base64"}
     host → plugin: {"type":"http_response","seq":N,"error":"…","error_code":"…"}
+
+    ``body_encoding`` is absent (meaning ``"utf8"``) when the response bytes are
+    valid UTF-8, and ``"base64"`` otherwise. :func:`fetch` decodes it.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import sys
 from itertools import count
-from typing import Any
+from typing import Any, TypedDict
 
 from .protocol import (
     ERR_EXECUTION_FAILED,
@@ -245,32 +252,82 @@ def storage_delete(key: str) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+#: Value of ``body_encoding`` for a text body (also what an absent field means).
+BODY_ENCODING_UTF8 = "utf8"
+#: Value of ``body_encoding`` for a body the host sent as base64.
+BODY_ENCODING_BASE64 = "base64"
+
+#: Request headers the host forwards; every other header is dropped by the host.
+ALLOWED_REQUEST_HEADERS = frozenset(
+    {"accept", "accept-language", "content-type", "if-none-match", "if-modified-since"}
+)
+
+
+class FetchResponse(TypedDict):
+    """What :func:`fetch` returns. A plain ``dict`` at runtime."""
+
+    #: Upstream HTTP status code (a 4xx/5xx or an unfollowed 3xx is not an error).
+    status: int
+    #: Upstream response headers (``Set-Cookie`` already stripped by the host).
+    headers: dict[str, str]
+    #: ``str`` when the response was UTF-8 text (unchanged from earlier SDKs);
+    #: ``bytes`` when it was not (the host sent it base64; this is decoded).
+    body: str | bytes
+    #: The exact response bytes, whatever ``body_encoding`` was.
+    body_bytes: bytes
+    #: ``"utf8"`` or ``"base64"``: how the host sent the body.
+    body_encoding: str
+
+
 def fetch(
     url: str,
     *,
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: str = "",
-) -> dict[str, Any]:
+) -> FetchResponse:
     """Make an outbound HTTP request through the host.
 
     The plugin never opens a socket directly — all network traffic routes
     through the host so it can enforce ``network:fetch`` permission and the
-    user's allow-list.  Requires ``network:fetch`` in the plugin manifest
-    and a Verified plugin tier.
+    origin allowlist the manifest declares on that permission
+    (``scope.origins``). Requires ``network:fetch`` in the plugin manifest and
+    a Verified plugin tier. HTTPS only; redirects are not followed (a 3xx comes
+    back as the response).
+
+    Request headers: the host forwards only ``Accept``, ``Accept-Language``,
+    ``Content-Type``, ``If-None-Match`` and ``If-Modified-Since``
+    (:data:`ALLOWED_REQUEST_HEADERS`) and silently drops every other header,
+    including ``Authorization``, ``Cookie`` and ``User-Agent``. Credentials are
+    host-only.
+
+    Response body: the host sends a body that is valid UTF-8 as text and
+    anything else as base64 with ``body_encoding: "base64"``. This function
+    decodes it, so:
+
+    * ``body`` is a ``str`` for a text response, exactly as before, and
+      ``bytes`` for a binary one (a PDF, an image, Latin-1 text);
+    * ``body_bytes`` is always the exact response bytes, for code that wants
+      one type;
+    * ``body_encoding`` says which case it was.
 
     Args:
-        url: The fully-qualified URL to request.
+        url: The fully-qualified ``https://`` URL to request.
         method: HTTP method (default ``"GET"``).
-        headers: Optional request headers dict.
-        body: Optional request body string (use ``""`` for bodyless requests).
+        headers: Optional request headers (see the allowlist above).
+        body: Optional request body text, sent as UTF-8 (``""`` for none).
+            A body on GET/HEAD is refused by the host.
 
     Returns:
-        ``{"status": 200, "headers": {...}, "body": "…"}``
+        A :class:`FetchResponse` dict:
+        ``{"status": 200, "headers": {...}, "body": "…" | b"…",
+        "body_bytes": b"…", "body_encoding": "utf8" | "base64"}``.
 
     Raises:
-        PluginError: If the host denies the request, the URL is not on the
-            allow-list, or a network error occurs.
+        PluginError: If the host denies the request, the origin is not
+            allowed, a network error occurs (``code`` is the host's
+            ``error_code``; the message never contains the URL), or the host
+            reply carries a ``body_encoding`` this SDK does not understand.
     """
     seq = next(_seq_counter)
     result = _rpc(
@@ -284,8 +341,46 @@ def fetch(
         },
         TYPE_HTTP_RESPONSE,
     )
+    encoding = result.get("body_encoding")
+    if encoding is None:  # absent: a text body, the wire before body_encoding existed
+        encoding = BODY_ENCODING_UTF8
+    decoded, raw = _decode_body(result.get("body", ""), encoding)
     return {
         "status": result.get("status", 0),
         "headers": result.get("headers", {}),
-        "body": result.get("body", ""),
+        "body": decoded,
+        "body_bytes": raw,
+        "body_encoding": encoding,
     }
+
+
+def _decode_body(wire: Any, encoding: Any) -> tuple[str | bytes, bytes]:
+    """Decode an ``http_response`` body per its ``body_encoding``.
+
+    Returns ``(body, body_bytes)``: ``body`` is the text for ``"utf8"`` and the
+    decoded bytes for ``"base64"``.
+    """
+    if wire is None:
+        wire = ""
+    if not isinstance(wire, str):
+        raise PluginError(
+            f"fetch: host sent a non-string body ({type(wire).__name__})",
+            ERR_EXECUTION_FAILED,
+        )
+    if encoding == BODY_ENCODING_UTF8:
+        return wire, wire.encode("utf-8")
+    if encoding == BODY_ENCODING_BASE64:
+        try:
+            raw = base64.b64decode(wire, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise PluginError(
+                "fetch: host sent body_encoding 'base64' but the body is not valid base64",
+                ERR_EXECUTION_FAILED,
+            ) from exc
+        return raw, raw
+    raise PluginError(
+        f"fetch: unsupported body_encoding {encoding!r} from host "
+        f"(this SDK understands {BODY_ENCODING_UTF8!r} and {BODY_ENCODING_BASE64!r}; "
+        "upgrade hellohq-plugin-sdk)",
+        ERR_EXECUTION_FAILED,
+    )

@@ -7,6 +7,7 @@ canned response's seq matches the request's.
 
 from __future__ import annotations
 
+import base64
 import io
 import itertools
 import json
@@ -163,3 +164,106 @@ def test_unexpected_response_type_raises(monkeypatch):
     resp = {"type": "wrong_type", "seq": 0, "value": "v"}
     with pytest.raises(PluginError):
         _run(lambda: host.storage_get("k"), resp, monkeypatch)
+
+
+# ── fetch: body_encoding ─────────────────────────────────────────────────────
+
+# Every byte value, so the base64 round trip is checked byte-exact (and the
+# bytes are not valid UTF-8, which is when the host uses base64).
+_BINARY = bytes(range(256)) + b"%PDF-1.7\n\xff\xfe\x00"
+
+
+def _http_ok(**extra):
+    return {"type": "http_response", "seq": 0, "status": 200, "headers": {}, **extra}
+
+
+def test_fetch_utf8_body_unchanged_when_body_encoding_absent(monkeypatch):
+    text = '{"name":"Zoë","price":"€1"}'
+    result, _ = _run(lambda: host.fetch("https://x.example"), _http_ok(body=text), monkeypatch)
+    assert result["body"] == text
+    assert isinstance(result["body"], str)
+    assert result["body_bytes"] == text.encode("utf-8")
+    assert result["body_encoding"] == "utf8"
+
+
+def test_fetch_explicit_utf8_body_encoding(monkeypatch):
+    result, _ = _run(
+        lambda: host.fetch("https://x.example"),
+        _http_ok(body="hi", body_encoding="utf8"),
+        monkeypatch,
+    )
+    assert (result["body"], result["body_bytes"], result["body_encoding"]) == (
+        "hi",
+        b"hi",
+        "utf8",
+    )
+
+
+def test_fetch_missing_body_is_empty_text(monkeypatch):
+    result, _ = _run(lambda: host.fetch("https://x.example"), _http_ok(), monkeypatch)
+    assert (result["body"], result["body_bytes"]) == ("", b"")
+
+
+def test_fetch_base64_body_decoded_byte_exact(monkeypatch):
+    wire = base64.b64encode(_BINARY).decode("ascii")
+    result, _ = _run(
+        lambda: host.fetch("https://x.example/doc.pdf"),
+        _http_ok(body=wire, body_encoding="base64"),
+        monkeypatch,
+    )
+    assert isinstance(result["body"], bytes)
+    assert result["body"] == _BINARY
+    assert result["body_bytes"] == _BINARY
+    assert result["body_encoding"] == "base64"
+
+
+def test_fetch_empty_base64_body(monkeypatch):
+    result, _ = _run(
+        lambda: host.fetch("https://x.example"),
+        _http_ok(body="", body_encoding="base64"),
+        monkeypatch,
+    )
+    assert (result["body"], result["body_bytes"]) == (b"", b"")
+
+
+def test_fetch_unknown_body_encoding_raises_clear_error(monkeypatch):
+    with pytest.raises(PluginError) as err:
+        _run(
+            lambda: host.fetch("https://x.example"),
+            _http_ok(body="00ff", body_encoding="hex"),
+            monkeypatch,
+        )
+    assert "unsupported body_encoding 'hex'" in err.value.message
+    assert err.value.code == "execution_failed"
+
+
+def test_fetch_invalid_base64_raises(monkeypatch):
+    with pytest.raises(PluginError) as err:
+        _run(
+            lambda: host.fetch("https://x.example"),
+            _http_ok(body="not base64!", body_encoding="base64"),
+            monkeypatch,
+        )
+    assert "not valid base64" in err.value.message
+
+
+def test_fetch_non_string_body_raises(monkeypatch):
+    with pytest.raises(PluginError):
+        _run(lambda: host.fetch("https://x.example"), _http_ok(body=[1, 2]), monkeypatch)
+
+
+def test_fetch_error_passes_host_code_through(monkeypatch):
+    resp = {"type": "http_response", "seq": 0, "error": "Request timed out", "error_code": "timeout"}
+    with pytest.raises(PluginError) as err:
+        _run(lambda: host.fetch("https://x.example/secret?q=1"), resp, monkeypatch)
+    assert err.value.code == "timeout"
+
+
+def test_allowed_request_headers_match_host_policy():
+    assert host.ALLOWED_REQUEST_HEADERS == {
+        "accept",
+        "accept-language",
+        "content-type",
+        "if-none-match",
+        "if-modified-since",
+    }

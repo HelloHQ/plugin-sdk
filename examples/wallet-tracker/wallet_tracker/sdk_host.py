@@ -32,9 +32,15 @@ class SdkHost:
             raw = sdk.fetch(url, method=method, headers=dict(headers or {}), body=body)
         except PluginError as exc:
             raise FetchError(str(exc), code=getattr(exc, "code", "fetch_error")) from exc
+        text = raw.get("body") or ""
+        if not isinstance(text, str):
+            # The SDK hands back bytes when the host sent the body base64 because it
+            # was not UTF-8. Every source this plugin reads is JSON, so that is a bad
+            # response, not something to decode by guessing.
+            raise FetchError("response body is not UTF-8 text", code="unexpected_response")
         return HttpResponse(
             status=int(raw.get("status", 0)),
-            body=raw.get("body") or "",
+            body=text,
             headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
         )
 

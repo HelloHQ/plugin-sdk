@@ -348,8 +348,14 @@ class MockHost {
 
 /// Callback for mocking network fetch in [MockSidecarHost].
 ///
-/// Receives the full request map and returns a response map with keys
-/// `status` (int), `headers` (Map<String, dynamic>), and `body` (String).
+/// Receives the request map, with `headers` already filtered the way the real
+/// host filters them (see [MockSidecarHost.allowedRequestHeaders]), and returns
+/// a response map with keys `status` (int), `headers` (Map<String, dynamic>)
+/// and `body`. `body` is either a `String` (sent as text) or a `List<int>` of
+/// raw bytes, which is put on the wire the way the real host does it: as text
+/// when the bytes are valid UTF-8, otherwise base64 with
+/// `"body_encoding": "base64"`. To hand-craft the wire, return a `String` body
+/// together with an explicit `body_encoding`.
 typedef MockNetworkCallback = Map<String, dynamic> Function(
   Map<String, dynamic> request,
 );
@@ -383,6 +389,20 @@ class MockSidecarHost {
   /// Handles `http_request` calls. Requires `network:fetch` in grants.
   /// Defaults to returning HTTP 403 for every request if not provided.
   final MockNetworkCallback? onNetworkFetch;
+
+  /// Lower-case request header names the real host forwards for
+  /// `network:fetch`. Every other header is dropped before [onNetworkFetch]
+  /// sees the request, as the host drops it before the request leaves.
+  static const Set<String> allowedRequestHeaders = {
+    'accept',
+    'accept-language',
+    'content-type',
+    'if-none-match',
+    'if-modified-since',
+  };
+
+  /// Lower-case response header names the real host never returns.
+  static const Set<String> strippedResponseHeaders = {'set-cookie', 'set-cookie2'};
 
   /// In-memory key-value store backing `storage_get/set/delete`.
   /// Requires `plugin:storage` in grants.
@@ -508,7 +528,7 @@ class MockSidecarHost {
     final callback = onNetworkFetch;
     final Map<String, dynamic> resp;
     if (callback != null) {
-      resp = callback(msg);
+      resp = callback({...msg, 'headers': _allowedHeaders(msg['headers'])});
     } else {
       // Default stub: 403 with an explanatory body.
       resp = {
@@ -517,13 +537,47 @@ class MockSidecarHost {
         'body': 'mock: no onNetworkFetch callback configured in MockSidecarHost',
       };
     }
+    final headers = <String, dynamic>{
+      for (final e in ((resp['headers'] as Map?) ?? const {}).entries)
+        if (!strippedResponseHeaders.contains('${e.key}'.toLowerCase()))
+          '${e.key}': e.value,
+    };
+    final wire = _wireBody(resp['body'], resp['body_encoding'] as String?);
     return jsonEncode({
       'type': 'http_response',
       'seq': seq,
       'status': resp['status'] ?? 200,
-      'headers': resp['headers'] ?? <String, dynamic>{},
-      'body': resp['body'] ?? '',
+      'headers': headers,
+      'body': wire.body,
+      if (wire.encoding != null) 'body_encoding': wire.encoding,
     });
+  }
+
+  /// The request headers the real host would forward, names lower-cased.
+  static Map<String, String> _allowedHeaders(Object? raw) => raw is Map
+      ? {
+          for (final e in raw.entries)
+            if (e.key is String &&
+                e.value != null &&
+                allowedRequestHeaders.contains((e.key as String).trim().toLowerCase()))
+              (e.key as String).trim().toLowerCase(): '${e.value}',
+        }
+      : const {};
+
+  /// The body as the real host puts it on the JSON wire: text with no
+  /// `body_encoding` when it is valid UTF-8, base64 with `"base64"` otherwise.
+  static ({String body, String? encoding}) _wireBody(
+    Object? body,
+    String? encoding,
+  ) {
+    if (body is List<int>) {
+      try {
+        return (body: utf8.decode(body), encoding: null);
+      } on FormatException {
+        return (body: base64Encode(body), encoding: 'base64');
+      }
+    }
+    return (body: body == null ? '' : '$body', encoding: encoding);
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────

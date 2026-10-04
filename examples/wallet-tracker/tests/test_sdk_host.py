@@ -32,3 +32,14 @@ def test_fetch_maps_plugin_error_with_code(monkeypatch):
 def test_propose_is_explicitly_unsupported():
     with pytest.raises(HostUnsupported):
         SdkHost().propose({"schema": "x", "proposals": []})
+
+
+def test_fetch_refuses_a_binary_body(monkeypatch):
+    # The SDK returns bytes when the host sent the body base64 (not UTF-8).
+    def fake_fetch(url, *, method, headers, body):
+        return {"status": 200, "headers": {}, "body": b"\xff", "body_bytes": b"\xff", "body_encoding": "base64"}
+
+    monkeypatch.setattr(sdk, "fetch", fake_fetch)
+    with pytest.raises(FetchError) as err:
+        SdkHost().fetch("GET", "https://x.example/")
+    assert err.value.code == "unexpected_response"

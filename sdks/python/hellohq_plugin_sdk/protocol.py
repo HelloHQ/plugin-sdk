@@ -58,7 +58,12 @@ TYPE_STORAGE_RESPONSE = "storage_response"
 # Wire format:
 #   {"type":"http_request","seq":N,"method":"GET","url":"…","headers":{},"body":"…"}
 #   → {"type":"http_response","seq":N,"status":200,"headers":{},"body":"…"}
+#   → {"type":"http_response","seq":N,"status":200,"headers":{},"body":"<base64>",
+#      "body_encoding":"base64"}   (a response body that is not valid UTF-8)
 #   → {"type":"http_response","seq":N,"error":"…","error_code":"…"}
+# The host forwards only the Accept, Accept-Language, Content-Type,
+# If-None-Match and If-Modified-Since request headers; error text never
+# contains the URL. See hellohq_plugin_sdk.host.fetch.
 TYPE_HTTP_REQUEST = "http_request"
 TYPE_HTTP_RESPONSE = "http_response"
 

@@ -27,9 +27,10 @@ host's propose-only write API (designed, not built) is not required. What it doe
 * **Plugin system availability**: plugins are held back from customers; Tier-1 sidecars need
   the Verified tier and desktop, and `network:fetch` from a sidecar is Verified-tier only.
 * **Setting the SEC `User-Agent`**: the SEC requires a declared contact. The core sends it as a
-  plain `User-Agent` header, but the host may strip or reject plugin-set headers (a header
-  allowlist is planned). Until the host lets a manifest-declared, non-secret `User-Agent`
-  through, live SEC calls may be refused; see "Requests" below.
+  plain `User-Agent` header, but the host now forwards only `Accept`, `Accept-Language`,
+  `Content-Type`, `If-None-Match` and `If-Modified-Since` and drops every other plugin-set
+  header, `User-Agent` included. Until the host lets a manifest-declared, non-secret
+  `User-Agent` through, live SEC calls will be refused (403); see "Requests" below.
 * **Plugins cannot read holdings** (only summaries), so identifiers are typed in by the person
   or kept by the UI in plugin storage; the plugin cannot discover them itself.
 * **8 MiB response cap**: very large filers' company-facts files can exceed it. The core then
