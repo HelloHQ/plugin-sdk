@@ -28,7 +28,12 @@ from typing import Any
 from hellohq_plugin_sdk import PluginError, UnsupportedFunction, host, serve
 from hellohq_plugin_sdk.protocol import ERR_EXECUTION_FAILED, ERR_INVALID_INPUT
 
-from filings_companion.errors import ContactNotConfigured, PluginCoreError, ValidationError
+from filings_companion.errors import (
+    ContactNotConfigured,
+    ParseError,
+    PluginCoreError,
+    ValidationError,
+)
 from filings_companion.hostapi import FetchRequest, FetchResponse
 from filings_companion.service import configure_contact, contact_status, lookup_holdings
 
@@ -43,10 +48,16 @@ class SidecarHost:
             headers=dict(request.headers),
             body=request.body or "",
         )
+        body = reply.get("body", "")
+        if not isinstance(body, str):
+            # The SDK hands back bytes when the host sent the body base64 because it
+            # was not UTF-8. Every source this plugin reads is JSON or CSV text, so
+            # that is a bad response; str(bytes) would silently corrupt it.
+            raise ParseError("response body is not UTF-8 text")
         return FetchResponse(
             status=int(reply.get("status", 0)),
             headers=reply.get("headers") or {},
-            body=str(reply.get("body", "")),
+            body=body,
         )
 
     def storage_get(self, key: str) -> str | None:

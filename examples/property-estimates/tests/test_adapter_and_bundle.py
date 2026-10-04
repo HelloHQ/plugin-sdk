@@ -106,3 +106,22 @@ def test_bundle_has_no_duplicate_top_level_definitions():
         if isinstance(node, ast.FunctionDef | ast.ClassDef):
             seen[node.name] = seen.get(node.name, 0) + 1
     assert [n for n, c in seen.items() if c > 1] == []
+
+
+def test_binary_body_is_refused_not_stringified(plugin, monkeypatch):
+    # The SDK returns bytes when the host sent the body base64 (not UTF-8).
+    # str(bytes) would hand "b'...'" to the parsers; the adapter refuses instead.
+    monkeypatch.setattr(
+        plugin.host,
+        "fetch",
+        lambda url, **kw: {
+            "status": 200,
+            "headers": {},
+            "body": b"\xff\xfe",
+            "body_bytes": b"\xff\xfe",
+            "body_encoding": "base64",
+        },
+    )
+    with pytest.raises(Exception) as ei:
+        plugin.SidecarHost().fetch(plugin.FetchRequest(url="https://example.invalid/x"))
+    assert getattr(ei.value, "code", None) == "unexpected_response_shape"

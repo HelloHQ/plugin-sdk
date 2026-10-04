@@ -27,7 +27,7 @@ from typing import Any
 from hellohq_plugin_sdk import PluginError, UnsupportedFunction, host, serve
 from hellohq_plugin_sdk.protocol import ERR_EXECUTION_FAILED, ERR_INVALID_INPUT
 
-from property_estimates.errors import PluginCoreError, ValidationError
+from property_estimates.errors import ParseError, PluginCoreError, ValidationError
 from property_estimates.hostapi import FetchRequest, FetchResponse, Receipt
 from property_estimates.service import estimate_property, submit_proposal
 
@@ -42,10 +42,16 @@ class SidecarHost:
             headers=dict(request.headers),
             body=request.body or "",
         )
+        body = reply.get("body", "")
+        if not isinstance(body, str):
+            # The SDK hands back bytes when the host sent the body base64 because it
+            # was not UTF-8. Every source this plugin reads is JSON or CSV text, so
+            # that is a bad response; str(bytes) would silently corrupt it.
+            raise ParseError("response body is not UTF-8 text")
         return FetchResponse(
             status=int(reply.get("status", 0)),
             headers=reply.get("headers") or {},
-            body=str(reply.get("body", "")),
+            body=body,
         )
 
     def propose(self, proposals: Any) -> list[Receipt]:
