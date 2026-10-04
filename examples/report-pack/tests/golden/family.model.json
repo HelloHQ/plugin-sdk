@@ -1,0 +1,125 @@
+{
+  "schema": "hellohq.report-pack/1",
+  "generated_at": "2026-10-04T12:00:30Z",
+  "data_status": "complete",
+  "portfolios": [
+    {
+      "id": "ptf_home",
+      "name": "Family Home",
+      "totals_status": "ok",
+      "totals": [
+        {
+          "currency": "CNY",
+          "amount": "480000.5"
+        },
+        {
+          "currency": "SGD",
+          "amount": "1250000.0"
+        }
+      ]
+    },
+    {
+      "id": "ptf_invest",
+      "name": "Investments",
+      "totals_status": "ok",
+      "totals": [
+        {
+          "currency": "JPY",
+          "amount": "3500000"
+        },
+        {
+          "currency": "SGD",
+          "amount": "98000.0"
+        },
+        {
+          "currency": "USD",
+          "amount": "215340.126"
+        }
+      ]
+    },
+    {
+      "id": "ptf_biz",
+      "name": "Chen & Sons Trading",
+      "totals_status": "ok",
+      "totals": [
+        {
+          "currency": "USD",
+          "amount": "48000.0"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "portfolio_count": 3,
+    "portfolios_with_totals": 3,
+    "currency_count": 4
+  },
+  "currency_exposure": [
+    {
+      "currency": "CNY",
+      "combined_total": "480000.5",
+      "portfolio_count": 1,
+      "portfolios": [
+        {
+          "id": "ptf_home",
+          "name": "Family Home"
+        }
+      ]
+    },
+    {
+      "currency": "JPY",
+      "combined_total": "3500000",
+      "portfolio_count": 1,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        }
+      ]
+    },
+    {
+      "currency": "SGD",
+      "combined_total": "1348000.0",
+      "portfolio_count": 2,
+      "portfolios": [
+        {
+          "id": "ptf_home",
+          "name": "Family Home"
+        },
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        }
+      ]
+    },
+    {
+      "currency": "USD",
+      "combined_total": "263340.126",
+      "portfolio_count": 2,
+      "portfolios": [
+        {
+          "id": "ptf_invest",
+          "name": "Investments"
+        },
+        {
+          "id": "ptf_biz",
+          "name": "Chen & Sons Trading"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    {
+      "code": "basis"
+    },
+    {
+      "code": "asof"
+    },
+    {
+      "code": "currency"
+    },
+    {
+      "code": "rounding"
+    }
+  ]
+}

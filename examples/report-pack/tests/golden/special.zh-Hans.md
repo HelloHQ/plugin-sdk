@@ -1,0 +1,51 @@
+# 家庭会议报告
+
+HelloHQ 中记录的投资组合合计
+
+编制时间：2026-10-04 12:00 UTC。数据来源：您的 HelloHQ 工作区（投资组合名称与汇总合计）。
+
+## 摘要
+
+- 纳入的投资组合：5 个。
+- 有合计数据的投资组合：5 个（共 5 个）。
+- 记录合计涉及的币种：4 种。
+
+按币种汇总的记录合计（不同币种的金额不会相加，也不做换算）：
+
+- CNY 3.00：1 个投资组合（家庭基金 evil line2）。截至 2026-10-04 12:00 UTC。
+- EUR 4.00：1 个投资组合（\<script\>alert(1)\</script\> & co）。截至 2026-10-04 12:00 UTC。
+- GBP 5.00：1 个投资组合（p5）。截至 2026-10-04 12:00 UTC。
+- USD 3.00：2 个投资组合之和（Savings \| 2026 \*draft\* \[x\](http\://evil) \<b\>bold\</b\>、AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…）。截至 2026-10-04 12:00 UTC。
+
+## 各投资组合合计
+
+每个投资组合、每种币种一行。数据来源：HelloHQ 工作区。“截至”为本报告读取您工作区数据的时间。
+
+| 投资组合 | 币种 | 记录合计 | 截至（UTC） |
+| --- | --- | ---: | --- |
+| Savings \| 2026 \*draft\* \[x\](http\://evil) \<b\>bold\</b\> | USD | 1.00 | 2026-10-04 12:00 |
+| AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA… | USD | 2.00 | 2026-10-04 12:00 |
+| 家庭基金 evil line2 | CNY | 3.00 | 2026-10-04 12:00 |
+| \<script\>alert(1)\</script\> & co | EUR | 4.00 | 2026-10-04 12:00 |
+| p5 | GBP | 5.00 | 2026-10-04 12:00 |
+
+## 币种分布
+
+记录合计中出现的币种，以及持有这些币种的投资组合。金额未经换算，因此不提供各币种之间的占比。
+
+| 币种 | 投资组合数 | 投资组合名称 |
+| --- | ---: | --- |
+| CNY | 1 | 家庭基金 evil line2 |
+| EUR | 1 | \<script\>alert(1)\</script\> & co |
+| GBP | 1 | p5 |
+| USD | 2 | Savings \| 2026 \*draft\* \[x\](http\://evil) \<b\>bold\</b\>、AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA… |
+
+## 说明与免责声明
+
+- 各合计为 HelloHQ 提供的、投资组合内各项目最近一次记录值之和。HelloHQ 目前不提供总资产与负债的拆分，因此该合计不一定等于净资产。
+- “截至”为本报告读取您工作区数据的时间（UTC）。合计内各项记录值有各自的记录日期，本插件无法获取。
+- 币种按记录显示；不同币种的合计不会相加，也不做换算。
+- 金额按各币种通常的小数位数舍入后显示。
+- 过长的投资组合名称已在本报告中缩短显示。
+
+免责声明：本报告仅供信息参考，不构成财务、投资、税务或法律建议，也不推荐任何操作。数字为您在 HelloHQ 工作区中记录的数值，未经独立核实。
