@@ -108,6 +108,10 @@ class FakeWorld {
   String? upstreamRaw;
 
   bool forkExists = true;
+
+  /// What `gh api repos/HelloHQ/plugin-registry --jq .permissions.push`
+  /// prints ('true' for a maintainer), or null for the call failing.
+  String? registryPush = 'false';
   bool upstreamRemoteExists = false;
   ProcessResult signatureCheck = _ok();
   ProcessResult verifyArtifacts = _ok('  wasm_url SHA-256 ok\n');
@@ -200,6 +204,15 @@ class FakeWorld {
               uploadedOverride[name] ?? File(f).readAsBytesSync();
         }
         return _ok('https://github.com/$repo/releases/tag/$tag\n');
+      case [
+        'api',
+        'repos/HelloHQ/plugin-registry',
+        '--jq',
+        '.permissions.push',
+      ]:
+        return registryPush == null
+            ? _fail(1, 'gh: HTTP 502\n')
+            : _ok('$registryPush\n');
       case ['repo', 'view', _, '--json', 'parent', '--jq', _]:
         return forkExists
             ? _ok('HelloHQ/plugin-registry\n')
@@ -1293,7 +1306,10 @@ void main() {
       );
       expect(
         w.lines,
-        contains('git push --force -u origin publish/$_id/1.0.0'),
+        contains(
+          'git push --force -u origin '
+          'publish/$_id/1.0.0:refs/heads/publish/$_id/1.0.0',
+        ),
       );
       final create = w.calls.singleWhere(
         (c) => c.line.startsWith('gh pr create'),
@@ -1888,6 +1904,168 @@ void main() {
         _releaseUrl('v1.0.0', 'icon.svg'),
       );
     });
+  });
+
+  group('--submit: direct push for registry maintainers', () {
+    FakeWorld world() => FakeWorld()..served[_servedWasmUrl] = _wasmA;
+    const branch = 'publish/$_id/1.0.0';
+
+    test('push access: clones the registry, pushes there, no fork', () async {
+      final w = world()..registryPush = 'true';
+      final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+      expect(r.code, 0, reason: '$r');
+      expect(r.out, contains('pushing $branch there directly (no fork)'));
+      expect(
+        w.lines,
+        contains(startsWith('gh repo clone HelloHQ/plugin-registry ')),
+      );
+      // No fork is looked up or created.
+      expect(w.saw('gh repo fork'), isFalse);
+      expect(w.saw('gh repo view'), isFalse);
+      expect(w.saw('gh repo clone octocat/'), isFalse);
+      expect(
+        w.lines,
+        contains('git push --force -u origin $branch:refs/heads/$branch'),
+      );
+      final create = w.calls.singleWhere(
+        (c) => c.line.startsWith('gh pr create'),
+      );
+      expect(create.args[create.args.indexOf('--head') + 1], branch);
+      expect(create.args.join(' '), contains('--repo HelloHQ/plugin-registry'));
+    });
+
+    test('no push access: the fork path, head <login>:<branch>', () async {
+      final w = world()..registryPush = 'false';
+      final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+      expect(r.code, 0, reason: '$r');
+      expect(r.out, contains('using the fork octocat/plugin-registry'));
+      expect(
+        w.lines,
+        contains(startsWith('gh repo clone octocat/plugin-registry ')),
+      );
+      final create = w.calls.singleWhere(
+        (c) => c.line.startsWith('gh pr create'),
+      );
+      expect(create.args[create.args.indexOf('--head') + 1], 'octocat:$branch');
+    });
+
+    test('a failed permission check falls back to the fork path', () async {
+      final w = world()..registryPush = null;
+      final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+      expect(r.code, 0, reason: '$r');
+      expect(r.err, contains('could not read your permissions'));
+      expect(
+        w.lines,
+        contains(startsWith('gh repo clone octocat/plugin-registry ')),
+      );
+      expect(w.saw('gh repo clone HelloHQ/'), isFalse);
+    });
+
+    test('an odd permission answer is not push access', () async {
+      final w = world()..registryPush = 'null';
+      final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+      expect(r.code, 0, reason: '$r');
+      expect(w.saw('gh repo clone HelloHQ/'), isFalse);
+    });
+
+    test(
+      'direct path: an open PR from the registry branch is updated',
+      () async {
+        final w = world()
+          ..registryPush = 'true'
+          ..prList = jsonEncode([
+            {
+              // A same-named branch on someone's fork is not ours.
+              'url': 'https://github.com/HelloHQ/plugin-registry/pull/8',
+              'headRepositoryOwner': {'login': 'octocat'},
+            },
+            {
+              'url': 'https://github.com/HelloHQ/plugin-registry/pull/9',
+              'headRepositoryOwner': {'login': 'HelloHQ'},
+            },
+          ]);
+        final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+        expect(r.code, 0, reason: '$r');
+        expect(w.saw('gh pr create'), isFalse);
+        expect(r.out, contains('pull/9'));
+        expect(r.out, isNot(contains('pull/8')));
+      },
+    );
+
+    test('fork path: a registry-branch PR is not mistaken for ours', () async {
+      final w = world()
+        ..registryPush = 'false'
+        ..prList = jsonEncode([
+          {
+            'url': 'https://github.com/HelloHQ/plugin-registry/pull/9',
+            'headRepositoryOwner': {'login': 'HelloHQ'},
+          },
+        ]);
+      final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+      expect(r.code, 0, reason: '$r');
+      expect(w.saw('gh pr create'), isTrue);
+    });
+
+    test('every push in either path is a publish/ branch', () async {
+      for (final push in ['true', 'false']) {
+        final w = world()..registryPush = push;
+        final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+        expect(r.code, 0, reason: '$r');
+        final pushes = w.calls.where(
+          (c) => c.exe == 'git' && c.args.first == 'push',
+        );
+        expect(pushes, hasLength(1));
+        for (final c in pushes) {
+          final refspec = c.args.last;
+          expect(refspec, '$branch:refs/heads/$branch');
+          expect(isPublishBranch(refspec.split(':').first), isTrue);
+        }
+      }
+    });
+
+    test('isPublishBranch only accepts publish/<id>/<semver>', () {
+      expect(isPublishBranch('publish/com.example.summary/1.0.0'), isTrue);
+      expect(isPublishBranch('publish/com.example.summary/1.0.0-rc.1'), isTrue);
+      for (final bad in [
+        'main',
+        'refs/heads/main',
+        'publish',
+        'publish/main',
+        'publish/com.example.summary',
+        'publish/com.example.summary/main',
+        'publish/com.example.summary/1.0',
+        'publish/com.example.summary/1.0.0/extra',
+        'publish/Com.Example/1.0.0',
+        'publish/../main/1.0.0',
+        'feature/com.example.summary/1.0.0',
+        'publish/com.example.summary/1.0.0:refs/heads/main',
+        '',
+      ]) {
+        expect(isPublishBranch(bad), isFalse, reason: bad);
+      }
+    });
+
+    test(
+      'a manifest id the registry would not accept is refused up front',
+      () async {
+        for (final id in [
+          'Com.Example.X',
+          'example',
+          'com.example/../main',
+          '',
+        ]) {
+          final w = world()..registryPush = 'true';
+          final r = await _publish(
+            w,
+            _pluginDir(_manifest({'id': id})),
+            submit: true,
+          );
+          expect(r.code, 65, reason: id);
+          expect(w.calls, isEmpty, reason: id);
+          expect(w.fetched, isEmpty, reason: id);
+        }
+      },
+    );
   });
 
   group('dry run', () {
