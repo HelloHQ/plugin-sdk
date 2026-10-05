@@ -1,4 +1,5 @@
 // hqplugin — HelloHQ plugin CLI.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/command_runner.dart';
@@ -69,7 +70,9 @@ class _TestCommand extends Command<int> {
       ..addOption('wasm', help: 'Tier-2 plugin .wasm to run.')
       ..addOption('sidecar',
           help: 'Tier-1 Python plugin file or directory to run.')
-      ..addMultiOption('grant', help: 'Permission id to grant (repeatable).')
+      ..addMultiOption('grant',
+          help: 'Permission id to grant (repeatable). A propose permission '
+              'needs its kinds: propose:holdings=crypto_ticker,home.')
       ..addOption('fixture', help: 'JSON fixture of portfolios/currencies.')
       ..addOption('input',
           help: 'Run input JSON.', defaultsTo: '{"function":"main","args":{}}')
@@ -82,11 +85,23 @@ class _TestCommand extends Command<int> {
   Future<int> run() async {
     final sidecar = argResults?['sidecar'] as String?;
     if (sidecar != null) {
+      // The host calls the sidecar's `run` with {"context": …, "input": …};
+      // an explicit --input becomes that `input` (the default sends none).
+      Object? input;
+      if (argResults!.wasParsed('input')) {
+        try {
+          input = jsonDecode(argResults!['input'] as String);
+        } on FormatException catch (ex) {
+          stderr.writeln('test: bad --input: ${ex.message}');
+          return 65;
+        }
+      }
       return runSidecarTest(
         sidecarPath: sidecar,
         grants: (argResults?['grant'] as List<String>?) ?? const [],
         fixturePath: argResults?['fixture'] as String?,
         aiResponses: (argResults?['ai-response'] as List<String>?) ?? const [],
+        args: input == null ? const {} : {'context': {}, 'input': input},
       );
     }
     if (argResults?['bundle'] != null) {

@@ -205,6 +205,18 @@ Future<int> runSidecarTest({
   }
 
   // ── Build the mock host ───────────────────────────────────────────────────
+  // A propose grant is only a grant with its `scope.kinds` (the manifest's
+  // required scope); `--grant propose:holdings=crypto_ticker,home` gives it.
+  for (final g in grants) {
+    final bare = g == 'propose:holdings' || g == 'propose:valuations';
+    if (bare || (g.startsWith('propose:') && g.endsWith('='))) {
+      e.writeln(
+        'test: warning: $g has no scope.kinds, so the mock host treats it as '
+        'not granted. Use $g=<kind>[,<kind>...] (kinds: '
+        '${mockProposeAssetKinds.join(", ")}).',
+      );
+    }
+  }
   final mockAi = aiResponses.isNotEmpty ? cannedResponses(aiResponses) : null;
   final host = MockSidecarHost(
     granted: grants,
@@ -275,6 +287,17 @@ Future<int> runSidecarTest({
       e.writeln('\n── Plugin stderr ──');
       e.write(stderrBuf.toString());
     }
+    // What the mock queued for review (nothing is saved anywhere).
+    if (host.proposer.queued.isNotEmpty) {
+      o.writeln('\n── Proposals queued (mock host, not saved) ──');
+      for (final p in host.proposer.queued) {
+        final value = p['value'] as Map?;
+        o.writeln(
+          '  ${p['kind']} ${p['source_key']}'
+          '${value == null ? "" : "  ${value['amount']} ${value['currency']}"}',
+        );
+      }
+    }
     // Print final storage state if non-empty.
     if (host.storage.isNotEmpty) {
       o.writeln('\n── Storage (after run) ──');
@@ -295,8 +318,10 @@ Future<int> runSidecarTest({
 ///   plugin → host: `{"id":1,"result":<value>}`              (success)
 ///                  `{"id":1,"error":{"code":"…","message":"…"}}`  (failure)
 /// Mid-dispatch the plugin may issue synchronous host calls carrying
-/// `{"type":"ai_complete"|"storage_*"|"http_request","seq":N,…}`, which are
-/// answered inline by [MockSidecarHost]. Events carry `{"type":"event",…}`.
+/// `{"type":"ai_complete"|"storage_*"|"http_request"|"propose","seq":N,…}`,
+/// which are answered inline by [MockSidecarHost] (`propose` by its mock
+/// propose service: valid batches are queued in memory, never saved). Events
+/// carry `{"type":"event",…}`.
 Future<int> _runProtocol({
   required Process process,
   required IOSink stdinSink,
@@ -357,7 +382,8 @@ Future<int> _runProtocol({
         return;
       }
 
-      // ── Synchronous host calls (ai_complete / storage_* / http_request) ──
+      // ── Synchronous host calls (ai_complete / storage_* / http_request /
+      //    propose) ──
       final response = host.handleLine(line);
       if (response != null) {
         stdinSink.writeln(response);

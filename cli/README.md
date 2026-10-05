@@ -32,6 +32,26 @@ The runtime needs `libwasmtime`, provisioned by
 Because the mock serves the exact `hq_read` protocol the real host does, a plugin
 that renders correctly here renders correctly in the app.
 
+### Tier 1 sidecars (`--sidecar`) and proposing
+
+`test --sidecar <plugin.py|dir> --grant <perm> ...` spawns a Python sidecar and
+answers its host calls with the mock host (`ai_complete`, `storage_*`,
+`http_request`, `propose`). `--input <json>` is sent as the run's `input`.
+
+A plugin that proposes holdings or values needs the propose permission **with
+its asset kinds**, as the manifest's `scope.kinds` has them:
+
+```bash
+dart run bin/hqplugin.dart test --sidecar examples/wallet-tracker \
+  --grant network:fetch --grant propose:holdings=crypto_ticker \
+  --input '{"function":"scan","args":{"btc_addresses":["..."]}}'
+```
+
+The mock host validates the batch with the host's closed set of reason codes,
+queues it in memory and prints what it queued; nothing is saved. A bare
+`propose:holdings` (no kinds) is not a grant, as in the real host. See
+[`mock-host`](../mock-host) for what the mock does and does not model.
+
 ## `build`
 
 `build --lang rust --entry <crate-dir> --out <file>` runs
