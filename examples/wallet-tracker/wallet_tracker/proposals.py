@@ -1,10 +1,11 @@
 """Proposal construction, pre-flight validation and provenance.
 
-The shape follows the host's propose-only write DESIGN (internal, unpublished)
-(``hellohq.proposal-batch@1``). That API is designed but NOT built; nothing in
-this module is a protocol definition, and the shape may change when the host
-ships it. Every proposal carries provenance: the source's origin, the exact
-request path used, the fetch time, and the identifier (``source_key``).
+The shape is the host's ``hellohq.proposal-batch@1``
+(``plugin-protocol`` ``sidecar/host-calls.schema.json``). ``validate_proposal`` is
+this plugin's own pre-flight; the host validates every batch itself and its
+receipts (``invalid`` + a reason code) are the authority. Every proposal carries
+provenance: the source's origin, the exact request path used, the fetch time,
+and the identifier (``source_key``).
 
 The plugin never learns item ids and never writes. It proposes against its
 own source key; the person confirms a binding in the host UI.

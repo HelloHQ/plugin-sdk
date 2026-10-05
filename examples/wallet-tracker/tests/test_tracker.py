@@ -24,7 +24,7 @@ from fixtures import (
     utxo_response,
 )
 from wallet_tracker import solana
-from wallet_tracker.errors import ValidationError
+from wallet_tracker.errors import HostError, HostUnsupported, ProposeRefused, ValidationError
 from wallet_tracker.host import HttpResponse
 from wallet_tracker.money import assert_no_floats
 from wallet_tracker.proposals import validate_proposal
@@ -365,3 +365,158 @@ def test_parse_request_validation():
     ):
         with pytest.raises(ValidationError):
             parse_request(bad)
+
+
+# -- submission: what the host's receipts and refusals become in the report ------------------
+
+
+def _two_batches(monkeypatch):
+    """One BTC + one Solana holding, split one proposal per batch (the host's per-call limits
+    are 50 holdings / 200 proposals, so two batches otherwise need 51+ wallets)."""
+    from wallet_tracker import tracker
+    from wallet_tracker.proposals import SCHEMA
+
+    monkeypatch.setattr(tracker, "batches", lambda ps: [{"schema": SCHEMA, "proposals": [p]} for p in ps])
+    routes = Routes()
+    routes.btc[("mempool.space", BTC_P2WPKH)] = address_response(BTC_P2WPKH)
+    routes.sol_balances = {SOL_DOC_ADDRESS: 5_000_000_000}
+    return routes, ScanRequest(btc_addresses=(BTC_P2WPKH,), solana_addresses=(SOL_DOC_ADDRESS,), price_currency=None)
+
+
+def _one_btc():
+    routes = Routes()
+    routes.btc[("mempool.space", BTC_P2WPKH)] = address_response(BTC_P2WPKH)
+    return routes, ScanRequest(btc_addresses=(BTC_P2WPKH,), price_currency=None)
+
+
+@pytest.mark.parametrize("outcome", ["queued", "duplicate", "superseded_older", "unchanged", "suppressed"])
+def test_each_host_outcome_is_reported_per_proposal(outcome):
+    routes, request = _one_btc()
+    host = FakeHost(routes, propose_script=[[{"index": 0, "outcome": outcome}]])
+    report, *_ = run(routes, request, host=host)
+    sub = report["submission"]
+    assert sub["status"] == "submitted"
+    assert sub["receipts"] == [
+        {"batch": 0, "index": 0, "source_key": f"btc:address:{BTC_P2WPKH}", "kind": "holding", "outcome": outcome}
+    ]
+    assert sub["summary"] == {outcome: 1}
+    assert report["issues"] == []
+
+
+def test_an_invalid_receipt_carries_the_host_reason_and_becomes_an_issue():
+    routes, request = _one_btc()
+    host = FakeHost(routes, propose_script=[[{"index": 0, "outcome": "invalid", "reason": "fetched_at_outside_run"}]])
+    report, *_ = run(routes, request, host=host)
+    (row,) = report["submission"]["receipts"]
+    assert (row["outcome"], row["reason"]) == ("invalid", "fetched_at_outside_run")
+    assert report["issues"] == [
+        {"code": "proposal_invalid", "subject": f"btc:address:{BTC_P2WPKH}", "message": "fetched_at_outside_run"}
+    ]
+    assert report["proposals"], "the proposals stay in the report either way"
+
+
+def test_receipts_from_two_batches_are_told_apart_by_batch_number(monkeypatch):
+    routes, request = _two_batches(monkeypatch)
+    host = FakeHost(
+        routes, propose_script=[[{"index": 0, "outcome": "queued"}], [{"index": 0, "outcome": "duplicate"}]]
+    )
+    report, *_ = run(routes, request, host=host)
+    sub = report["submission"]
+    assert [(r["batch"], r["index"], r["outcome"]) for r in sub["receipts"]] == [(0, 0, "queued"), (1, 0, "duplicate")]
+    assert [r["source_key"].split(":")[0] for r in sub["receipts"]] == ["btc", "sol"]
+    assert sub["summary"] == {"queued": 1, "duplicate": 1}
+
+
+def test_host_unsupported_is_the_fallback_only_when_the_host_says_so():
+    routes, request = _one_btc()
+    host = FakeHost(routes, propose_script=[HostUnsupported("the host does not support propose")])
+    report, *_ = run(routes, request, host=host)
+    sub = report["submission"]
+    assert sub["status"] == "host_unsupported"
+    assert "returned in this report instead" in sub["message"] and sub["receipts"] == []
+    assert len(all_proposals(report)) == 1
+
+
+def test_permission_denied_is_not_host_unsupported():
+    routes, request = _one_btc()
+    host = FakeHost(routes, propose_script=[ProposeRefused("no grant", code="permission_denied")])
+    report, *_ = run(routes, request, host=host)
+    sub = report["submission"]
+    assert sub["status"] == "permission_denied" and sub["code"] == "permission_denied"
+    assert sub["retryable"] is False and sub["unsubmitted_batches"] == 1
+    assert len(all_proposals(report)) == 1
+
+
+def test_a_refusal_stops_later_batches_and_keeps_earlier_receipts(monkeypatch):
+    routes, request = _two_batches(monkeypatch)
+    limited = ProposeRefused("Too many propose calls; try again later.", code="rate_limit_exceeded", retryable=True)
+    host = FakeHost(routes, propose_script=[[{"index": 0, "outcome": "queued"}], limited])
+    report, *_ = run(routes, request, host=host)
+    sub = report["submission"]
+    assert sub["status"] == "failed" and sub["code"] == "rate_limit_exceeded" and sub["retryable"] is True
+    assert sub["unsubmitted_batches"] == 1
+    assert [r["outcome"] for r in sub["receipts"]] == ["queued"]
+    assert len(host.batches) == 2
+    assert len(all_proposals(report)) == 2
+
+
+def test_bad_request_reason_is_reported():
+    routes, request = _one_btc()
+    host = FakeHost(routes, propose_script=[ProposeRefused("bad", code="bad_request", reason="bad_schema")])
+    report, *_ = run(routes, request, host=host)
+    assert (report["submission"]["status"], report["submission"]["reason"]) == ("failed", "bad_schema")
+
+
+def test_any_other_host_error_is_a_failed_submission_not_a_crash():
+    routes, request = _one_btc()
+    host = FakeHost(routes, propose_script=[HostError("host closed stdin", code="execution_failed")])
+    report, *_ = run(routes, request, host=host)
+    assert report["submission"]["status"] == "failed" and report["submission"]["code"] == "execution_failed"
+    assert report["submission"]["summary"] == {}
+
+
+def test_the_report_with_receipts_is_json_and_float_free():
+    routes, request = _one_btc()
+    report, *_ = run(routes, request)
+    assert_no_floats(report)
+    assert json.loads(json.dumps(report))["submission"]["summary"] == {"queued": 1}
+
+
+# -- the SDK's mirror of the host's rules agrees with what the plugin builds -----------------
+
+
+def test_every_proposal_the_plugin_builds_passes_the_hosts_field_rules():
+    """``wallet_tracker.proposals.validate_proposal`` is the plugin's own pre-flight. This checks
+    the same proposals against the SDK's mirror of the HOST's rules (units, as_of form, display
+    names, allowed fields), which is what actually decides ``invalid`` receipts."""
+    from hellohq_plugin_sdk.proposal_validation import validate_batch
+
+    routes = Routes()
+    routes.btc[("mempool.space", BTC_P2WPKH)] = address_response(BTC_P2WPKH)
+    routes.sol_balances = {SOL_DOC_OWNER: 7}
+    routes.sol_tokens = {
+        (SOL_DOC_OWNER, solana.TOKEN_PROGRAM): [
+            token_account(SOL_DOC_MINT, SOL_DOC_OWNER, "9", 2),
+            token_account(SOL_OTHER_MINT, SOL_DOC_OWNER, "1500000", 6),
+        ]
+    }
+    request = ScanRequest(
+        btc_addresses=(BTC_P2WPKH,),
+        solana_addresses=(SOL_DOC_OWNER,),
+        kinds=("holding", "valuation"),
+        include_utxo_count=True,
+    )
+    clock = FakeClock()
+    start = clock.utcnow()
+    report, *_ = run(routes, request, clock=clock)
+    proposals = all_proposals(report)
+    assert {p["kind"] for p in proposals} == {"holding", "valuation"} and len(proposals) >= 5
+    for batch in report["proposals"]:
+        issues = validate_batch(
+            batch,
+            now=clock.utcnow(),
+            run_start=start,
+            granted={"propose:holdings", "propose:valuations"},
+            allowed_kinds={"crypto_ticker"},
+        )
+        assert issues == [], issues

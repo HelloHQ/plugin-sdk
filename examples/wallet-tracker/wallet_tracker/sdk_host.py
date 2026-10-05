@@ -5,17 +5,19 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from wallet_tracker.errors import FetchError, HostUnsupported
+from wallet_tracker.errors import FetchError, HostError, HostUnsupported, ProposeRefused
 from wallet_tracker.host import HttpResponse
 
 
 class SdkHost:
     """Maps the narrow ``Host`` onto the Python SDK.
 
-    ``fetch`` is real (``network:fetch``, Verified tier, Tier 1). ``propose``
-    is NOT available: the SDK and the host protocol have no propose call yet,
-    and this plugin must not invent one. It raises ``HostUnsupported`` and the
-    caller returns the proposals as data instead.
+    ``fetch`` is ``network:fetch`` (Verified tier, Tier 1). ``propose`` is the
+    propose-only write (``propose:holdings`` / ``propose:valuations``): the
+    person approves each suggestion in the app, and the plugin only learns a
+    receipt per proposal. When the host (or the installed SDK) has no
+    ``propose`` it raises ``HostUnsupported`` and the caller returns the
+    proposals as data instead.
     """
 
     def fetch(
@@ -45,4 +47,22 @@ class SdkHost:
         )
 
     def propose(self, batch: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
-        raise HostUnsupported("propose is not available in this host")
+        try:
+            from hellohq_plugin_sdk import PluginError
+            from hellohq_plugin_sdk import host as sdk
+            from hellohq_plugin_sdk.proposals import ProposeError, ProposeUnsupported
+        except ImportError as exc:  # an SDK older than 0.2.0 has no propose
+            raise HostUnsupported("the installed hellohq-plugin-sdk has no propose (needs >= 0.2.0)") from exc
+
+        try:
+            receipts = sdk.propose(batch)
+        except ProposeUnsupported as exc:
+            raise HostUnsupported("the host does not support propose") from exc
+        except ProposeError as exc:
+            raise ProposeRefused(exc.message, code=exc.code, reason=exc.reason, retryable=exc.retryable) from exc
+        except PluginError as exc:  # the host closed the pipe, or replied with nonsense
+            raise HostError(str(exc), code=getattr(exc, "code", "host_error")) from exc
+        return [
+            {"index": r.index, "outcome": str(r.outcome), **({"reason": r.reason} if r.reason else {})}
+            for r in receipts
+        ]

@@ -11,11 +11,13 @@ Functions (host calls ``run`` with
   (public addresses the person entered), ``price_currency`` (default "USD" or
   null), ``kinds`` (["holding"] or add "valuation"), ``include_utxo_count``,
   ``submit``. Returns a report with balances, proposal batches, submission
-  status and issues.
+  status (per-proposal receipts) and issues.
 
 Permissions: network:fetch (mempool.space, blockstream.info,
-api.mainnet.solana.com), propose:holdings, propose:valuations - the two
-``propose:*`` ids are PENDING HOST SUPPORT (see README).
+api.mainnet.solana.com), propose:holdings and propose:valuations (scope.kinds
+["crypto_ticker"]). Proposals go to the host with ``hellohq_plugin_sdk.host.propose``
+(SDK >= 0.2.0); the report's ``submission`` carries the per-proposal receipts, or the
+reason nothing was submitted (see README "Submission").
 """
 
 from __future__ import annotations

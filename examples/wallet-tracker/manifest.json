@@ -17,18 +17,15 @@
   "permissions": [
     {
       "id": "network:fetch",
-      "scope": { "origins": ["mempool.space", "blockstream.info", "api.mainnet.solana.com"] },
-      "reason": "Reads public balances for the wallet addresses you enter from mempool.space, Blockstream Esplora and the Solana public RPC."
+      "scope": { "origins": ["mempool.space", "blockstream.info", "api.mainnet.solana.com"] }
     },
     {
       "id": "propose:holdings",
-      "scope": { "kinds": ["crypto_ticker"] },
-      "reason": "May suggest new crypto holdings. Nothing is saved until you approve it."
+      "scope": { "kinds": ["crypto_ticker"] }
     },
     {
       "id": "propose:valuations",
-      "scope": { "kinds": ["crypto_ticker"] },
-      "reason": "May suggest a dated value for a holding. Nothing is saved until you approve it."
+      "scope": { "kinds": ["crypto_ticker"] }
     }
   ]
 }
