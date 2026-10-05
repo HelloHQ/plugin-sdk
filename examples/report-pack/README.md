@@ -276,9 +276,9 @@ Read these before relying on the report.
    pack cannot know the person's portfolio ids in advance; the registry or the
    host will need a "chosen at install" scope.
 8. **No production use until signing ships.** Plugins are held back in
-   production: publisher signing (SA5) is dormant, `hqplugin publish` is not
-   implemented, and the committed hashes are zeros. `trust_tier: verified` must
-   be set by the registry team.
+   production: publisher signing (SA5) is dormant, and the committed hashes
+   are zeros (`hqplugin publish` pins real ones only once the files are
+   released). `trust_tier: verified` must be set by the registry team.
 9. **Local CLI cannot feed context.** `hqplugin test --sidecar` calls `run`
    with empty args — `MockSidecarHost` does not build the `context` snapshot,
    and `--bundle` cannot load the UI. The CLI run (also in CI) therefore shows

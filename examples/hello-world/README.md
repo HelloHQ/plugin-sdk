@@ -92,8 +92,9 @@ and `SHA256SUMS`, each with a build provenance attestation.
 
 `manifest.json` here keeps the all-zero placeholder `content_hash_sha256`: the
 hash of the released `plugin.wasm` only exists after the release build. The
-registry's copy of the manifest carries the released hash (copy it from the
-release notes or `SHA256SUMS`).
+registry's copy of the manifest carries the released hash, which
+`hqplugin publish --first-party` computes from the released file (see
+"Releasing an example plugin" in CONTRIBUTING.md).
 
 The Rust toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
 (1.99.0), so a release is reproducible: rebuilding the tag with `./build.sh`
