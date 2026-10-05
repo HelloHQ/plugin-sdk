@@ -3,6 +3,8 @@
 // I/O, so every rule is unit-tested directly.
 import 'dart:convert';
 
+import 'publish_icon.dart' show isAbsoluteIconUrl;
+
 /// The all-zero hash the example manifests carry before a release exists. The
 /// registry refuses it (scripts/verify-artifacts.mjs), so publish never pins it.
 final String kPlaceholderHash = '0' * 64;
@@ -137,6 +139,9 @@ String bumpVersion(String current, String kind) {
 ///  - [version], the artifact URLs and the hashes computed from the bytes those
 ///    URLs serve are set (a UI bundle's URL and hash are both set or both
 ///    removed);
+///  - an https `sidebar_icon` is set to [sidebarIconUrl] and pinned by
+///    `sidebar_icon_hash_sha256` (placed right after it); any other icon (a
+///    path inside the UI bundle, or none) keeps no icon hash;
 ///  - `signatures` are always removed: a PR never writes them, and the signing
 ///    pipeline re-signs after merge;
 ///  - `trust_tier` and `publisher_signing_key_id` are set by the registry team,
@@ -152,6 +157,8 @@ Map<String, dynamic> buildRegistryManifest({
   required String contentHash,
   String? uiBundleUrl,
   String? uiBundleHash,
+  String? sidebarIconUrl,
+  String? sidebarIconHash,
   bool firstParty = false,
 }) {
   final m = Map<String, dynamic>.from(author)
@@ -167,6 +174,20 @@ Map<String, dynamic> buildRegistryManifest({
       ..remove('ui_bundle_url')
       ..remove('ui_bundle_hash_sha256');
   }
+  m.remove('sidebar_icon_hash_sha256');
+  if (sidebarIconUrl != null && sidebarIconHash != null) {
+    m['sidebar_icon'] = sidebarIconUrl;
+    final pinned = <String, dynamic>{};
+    for (final entry in m.entries) {
+      pinned[entry.key] = entry.value;
+      if (entry.key == 'sidebar_icon') {
+        pinned['sidebar_icon_hash_sha256'] = sidebarIconHash;
+      }
+    }
+    m
+      ..clear()
+      ..addAll(pinned);
+  }
   if (!firstParty) {
     for (final key in const ['trust_tier', 'publisher_signing_key_id']) {
       final upstreamValue = upstream?[key];
@@ -181,8 +202,11 @@ Map<String, dynamic> buildRegistryManifest({
 }
 
 /// Problems that make [m] unpublishable (empty when there are none): a missing,
-/// malformed or placeholder hash, a non-https URL, or a UI bundle URL without
-/// its hash (or the reverse). The registry CI refuses each of these.
+/// malformed or placeholder hash, a non-https URL, a UI bundle URL without its
+/// hash (or the reverse), or a sidebar icon hash that does not go with an https
+/// `sidebar_icon`. The registry CI refuses each of these (an https icon
+/// without a hash is only a registry warning today, but publish always pins
+/// one).
 List<String> registryManifestProblems(Map<String, dynamic> m) {
   final problems = <String>[];
   void hash(String key, Object? value) {
@@ -210,6 +234,26 @@ List<String> registryManifestProblems(Map<String, dynamic> m) {
   } else if (hasUiUrl) {
     url('ui_bundle_url', m['ui_bundle_url']);
     hash('ui_bundle_hash_sha256', m['ui_bundle_hash_sha256']);
+  }
+  final icon = m['sidebar_icon'];
+  final iconHash = m['sidebar_icon_hash_sha256'];
+  if (icon is String && isAbsoluteIconUrl(icon)) {
+    if (!icon.startsWith('https://')) {
+      problems.add(
+        'sidebar_icon must be an https URL (or a path inside the UI bundle)',
+      );
+    } else if (iconHash == null) {
+      problems.add('an https sidebar_icon needs sidebar_icon_hash_sha256');
+    } else {
+      hash('sidebar_icon_hash_sha256', iconHash);
+    }
+  } else if (iconHash != null) {
+    problems.add(
+      icon == null
+          ? 'sidebar_icon_hash_sha256 is set but sidebar_icon is not'
+          : 'sidebar_icon_hash_sha256 applies only to an https sidebar_icon; '
+                'a bundle-path icon is pinned by the UI bundle',
+    );
   }
   if (m.containsKey('signatures')) {
     problems.add(
@@ -362,7 +406,7 @@ String registryPrBody({
     ..writeln();
   void artifact(String urlKey, String hashKey) {
     final url = manifest[urlKey];
-    if (url == null) return;
+    if (url == null || manifest[hashKey] == null) return;
     final size = artifactSizes[urlKey];
     b
       ..writeln('- `$urlKey`: $url')
@@ -374,6 +418,7 @@ String registryPrBody({
 
   artifact('wasm_url', 'content_hash_sha256');
   artifact('ui_bundle_url', 'ui_bundle_hash_sha256');
+  artifact('sidebar_icon', 'sidebar_icon_hash_sha256');
 
   b
     ..writeln()

@@ -27,6 +27,16 @@ final _wasmA = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x0a];
 final _wasmB = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x0b];
 final _uiZip = utf8.encode('PK\x03\x04 ui bundle');
 final _python = utf8.encode('from hellohq_plugin_sdk import plugin\n');
+final _iconA = utf8.encode(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+  '<path fill="currentColor" d="M4 4h16v16H4z"/></svg>',
+);
+final _iconB = utf8.encode(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+  '<path fill="currentColor" d="M2 2h20v20H2z"/></svg>',
+);
+const _servedIconUrl =
+    'https://github.com/$_authorRepo/releases/download/v1.0.0/icon.svg';
 
 Map<String, dynamic> _manifest([Map<String, dynamic> overrides = const {}]) {
   final m = <String, dynamic>{
@@ -290,6 +300,7 @@ Future<Result> _publish(
   String? bump,
   String? wasmPath,
   String? uiBundlePath,
+  String? iconPath,
   bool release = false,
   String? repo,
   String? tag,
@@ -306,6 +317,7 @@ Future<Result> _publish(
     bump: bump,
     wasmPath: wasmPath,
     uiBundlePath: uiBundlePath,
+    iconPath: iconPath,
     release: release,
     repo: repo,
     tag: tag,
@@ -1518,6 +1530,362 @@ void main() {
       expect(
         create.args[create.args.indexOf('--title') + 1],
         'Update plugin: $_id 0.9.0 → 1.0.0',
+      );
+    });
+  });
+
+  group('sidebar icon', () {
+    test('pins the hash of what an https sidebar_icon serves', () async {
+      final w = FakeWorld()
+        ..served[_servedWasmUrl] = _wasmA
+        ..served[_servedIconUrl] = _iconA;
+      // A different local icon.svg must not influence the pin.
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'icon.svg': _iconB,
+      });
+      final r = await _publish(w, dir);
+      expect(r.code, 0, reason: '$r');
+      final m = _plannedManifest(r.out);
+      expect(m['sidebar_icon'], _servedIconUrl);
+      expect(m['sidebar_icon_hash_sha256'], sha256Hex(_iconA));
+      expect(w.fetched, contains(_servedIconUrl));
+      expect(r.out, contains('`sidebar_icon_hash_sha256`'));
+    });
+
+    test('the icon cap is 64 KiB, independent of the artifact cap', () async {
+      final big = [..._iconA, ...List.filled(kMaxIconBytes, 0x20)];
+      final w = FakeWorld()
+        ..served[_servedWasmUrl] = _wasmA
+        ..served[_servedIconUrl] = big;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest({'sidebar_icon': _servedIconUrl})),
+      );
+      expect(r.code, 65);
+      expect(r.err, contains('larger than 65536 bytes'));
+    });
+
+    test('an unsafe served icon is refused before the PR', () async {
+      final w = FakeWorld()
+        ..served[_servedWasmUrl] = _wasmA
+        ..served[_servedIconUrl] = utf8.encode(
+          '<svg><script>alert(1)</script></svg>',
+        );
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest({'sidebar_icon': _servedIconUrl})),
+        submit: true,
+      );
+      expect(r.code, 65);
+      expect(r.err, contains('sidebar_icon $_servedIconUrl contains <script>'));
+      expect(w.mutatingCalls, isEmpty);
+    });
+
+    test('a non-https absolute icon is refused before any download', () async {
+      for (final url in [
+        'http://example.com/icon.svg',
+        'data:image/svg+xml,<svg/>',
+        'file:///etc/icon.svg',
+      ]) {
+        final w = FakeWorld()..served[_servedWasmUrl] = _wasmA;
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest({'sidebar_icon': url})),
+        );
+        expect(r.code, 65, reason: url);
+        expect(r.err, contains('must be an https URL'));
+        expect(w.fetched, isEmpty, reason: url);
+      }
+    });
+
+    test(
+      'a bundle-path icon gets no hash and a stale one is dropped',
+      () async {
+        const uiUrl =
+            'https://github.com/$_authorRepo/releases/download/v1.0.0/ui.zip';
+        final w = FakeWorld()
+          ..served[_servedWasmUrl] = _wasmA
+          ..served[uiUrl] = _uiZip;
+        final dir = _pluginDir(
+          _manifest({
+            'ui_type': 'webview',
+            'ui_bundle_url': uiUrl,
+            'sidebar_icon': 'icons/plugin.svg',
+            'sidebar_icon_hash_sha256': 'c' * 64,
+          }),
+        );
+        final r = await _publish(w, dir);
+        expect(r.code, 0, reason: '$r');
+        final m = _plannedManifest(r.out);
+        expect(m['sidebar_icon'], 'icons/plugin.svg');
+        expect(m.containsKey('sidebar_icon_hash_sha256'), isFalse);
+        expect(r.err, contains('dropping sidebar_icon_hash_sha256'));
+        expect(w.fetched, isNot(contains(contains('icons/plugin.svg'))));
+      },
+    );
+
+    test('a bundle-path icon on a non-webview plugin warns', () async {
+      final w = FakeWorld()..served[_servedWasmUrl] = _wasmA;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest({'sidebar_icon': 'icon.svg'})),
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(r.err, contains('generic icon'));
+    });
+
+    test('a stale hash without any sidebar_icon is dropped', () async {
+      final w = FakeWorld()..served[_servedWasmUrl] = _wasmA;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest({'sidebar_icon_hash_sha256': 'c' * 64})),
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(
+        _plannedManifest(r.out).containsKey('sidebar_icon_hash_sha256'),
+        isFalse,
+      );
+    });
+
+    test('--icon without --release is a usage error', () async {
+      final r = await _publish(
+        FakeWorld(),
+        _pluginDir(_manifest()),
+        iconPath: 'icon.svg',
+      );
+      expect(r.code, 64);
+      expect(r.err, contains('--icon'));
+    });
+
+    test('--release uploads ./icon.svg and repoints sidebar_icon', () async {
+      final w = FakeWorld();
+      final dir = _pluginDir(
+        _manifest({
+          'version': '1.0.1',
+          // Still the previous release's icon: publish repoints it.
+          'sidebar_icon': _servedIconUrl,
+        }),
+        {'plugin.wasm': _wasmA, 'icon.svg': _iconA},
+      );
+      final r = await _publish(w, dir, release: true, submit: true);
+      expect(r.code, 0, reason: '$r');
+      final create = w.calls.singleWhere(
+        (c) => c.line.startsWith('gh release create'),
+      );
+      expect(
+        create.args.map(p.basename),
+        containsAll(['plugin.wasm', 'icon.svg']),
+      );
+      final iconUrl = _releaseUrl('v1.0.1', 'icon.svg');
+      expect(w.fetched, contains(iconUrl), reason: 'round trip');
+      final m = _written(w);
+      expect(m['sidebar_icon'], iconUrl);
+      expect(m['sidebar_icon_hash_sha256'], sha256Hex(_iconA));
+      expect(w.fetched, isNot(contains(_servedIconUrl)));
+    });
+
+    test('--release refuses an icon that does not round-trip', () async {
+      final w = FakeWorld()..uploadedOverride['icon.svg'] = _iconB;
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'plugin.wasm': _wasmA,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(w, dir, release: true, submit: true);
+      expect(r.code, 65);
+      expect(r.err, contains('serves different bytes'));
+      expect(w.saw('gh repo clone'), isFalse);
+    });
+
+    test('--release --icon picks another file', () async {
+      final w = FakeWorld();
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'plugin.wasm': _wasmA,
+        'brand.svg': _iconB,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(
+        w,
+        dir,
+        release: true,
+        submit: true,
+        iconPath: 'brand.svg',
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(_written(w)['sidebar_icon'], _releaseUrl('v1.0.0', 'brand.svg'));
+      expect(_written(w)['sidebar_icon_hash_sha256'], sha256Hex(_iconB));
+    });
+
+    test('--release --icon adds an icon to a manifest without one', () async {
+      final w = FakeWorld();
+      final dir = _pluginDir(_manifest(), {
+        'plugin.wasm': _wasmA,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(
+        w,
+        dir,
+        release: true,
+        submit: true,
+        iconPath: 'icon.svg',
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(_written(w)['sidebar_icon'], _releaseUrl('v1.0.0', 'icon.svg'));
+      expect(_written(w)['sidebar_icon_hash_sha256'], sha256Hex(_iconA));
+    });
+
+    test(
+      '--release never adds an icon the manifest does not declare',
+      () async {
+        final w = FakeWorld();
+        final dir = _pluginDir(_manifest(), {
+          'plugin.wasm': _wasmA,
+          'icon.svg': _iconA,
+        });
+        final r = await _publish(w, dir, release: true, submit: true);
+        expect(r.code, 0, reason: '$r');
+        final create = w.calls.singleWhere(
+          (c) => c.line.startsWith('gh release create'),
+        );
+        expect(create.args.map(p.basename), isNot(contains('icon.svg')));
+        expect(_written(w).containsKey('sidebar_icon'), isFalse);
+        expect(r.out, contains('Pass --icon icon.svg'));
+      },
+    );
+
+    test(
+      '--release without a local icon pins the existing URL and warns',
+      () async {
+        final w = FakeWorld()..served[_servedIconUrl] = _iconA;
+        final dir = _pluginDir(
+          _manifest({'version': '1.0.1', 'sidebar_icon': _servedIconUrl}),
+          {'plugin.wasm': _wasmA},
+        );
+        final r = await _publish(w, dir, release: true, submit: true);
+        expect(r.code, 0, reason: '$r');
+        expect(_written(w)['sidebar_icon'], _servedIconUrl);
+        expect(_written(w)['sidebar_icon_hash_sha256'], sha256Hex(_iconA));
+        expect(r.err, contains('still points at another release'));
+      },
+    );
+
+    test('--release --icon with a missing file exits 66', () async {
+      final r = await _publish(
+        FakeWorld(),
+        _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+          'plugin.wasm': _wasmA,
+        }),
+        release: true,
+        iconPath: 'nope.svg',
+      );
+      expect(r.code, 66);
+      expect(r.err, contains('--icon <path>'));
+    });
+
+    test('--release --icon conflicts with a bundle-path icon', () async {
+      final r = await _publish(
+        FakeWorld(),
+        _pluginDir(_manifest({'sidebar_icon': 'icons/plugin.svg'}), {
+          'plugin.wasm': _wasmA,
+          'icon.svg': _iconA,
+        }),
+        release: true,
+        iconPath: 'icon.svg',
+      );
+      expect(r.code, 64);
+      expect(r.err, contains('path inside the UI bundle'));
+    });
+
+    test(
+      '--release refuses an unsafe or oversized local icon up front',
+      () async {
+        for (final bad in [
+          utf8.encode('<svg onload="x()"/>'),
+          [..._iconA, ...List.filled(kMaxIconBytes, 0x20)],
+        ]) {
+          final w = FakeWorld();
+          final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+            'plugin.wasm': _wasmA,
+            'icon.svg': bad,
+          });
+          final r = await _publish(w, dir, release: true, submit: true);
+          expect(r.code, 65, reason: '$r');
+          expect(w.mutatingCalls, isEmpty);
+        }
+      },
+    );
+
+    test('an existing release reuses an identical icon', () async {
+      final w = FakeWorld()
+        ..release = {
+          'isDraft': false,
+          'assets': [
+            {'name': 'plugin.wasm'},
+            {'name': 'icon.svg'},
+          ],
+        }
+        ..served[_releaseUrl('v1.0.0', 'plugin.wasm')] = _wasmA
+        ..served[_releaseUrl('v1.0.0', 'icon.svg')] = _iconA;
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'plugin.wasm': _wasmA,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(w, dir, release: true, submit: true);
+      expect(r.code, 0, reason: '$r');
+      expect(w.saw('gh release create'), isFalse);
+      expect(_written(w)['sidebar_icon_hash_sha256'], sha256Hex(_iconA));
+    });
+
+    test('an existing release with a different icon is refused', () async {
+      final w = FakeWorld()
+        ..release = {
+          'isDraft': false,
+          'assets': [
+            {'name': 'plugin.wasm'},
+            {'name': 'icon.svg'},
+          ],
+        }
+        ..served[_releaseUrl('v1.0.0', 'plugin.wasm')] = _wasmA
+        ..served[_releaseUrl('v1.0.0', 'icon.svg')] = _iconB;
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'plugin.wasm': _wasmA,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(w, dir, release: true, submit: true);
+      expect(r.code, 65);
+      expect(r.err, contains('immutable'));
+      expect(w.mutatingCalls, isEmpty);
+    });
+
+    test('an existing release without the icon asset is refused', () async {
+      final w = FakeWorld()
+        ..release = {
+          'isDraft': false,
+          'assets': [
+            {'name': 'plugin.wasm'},
+          ],
+        };
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'plugin.wasm': _wasmA,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(w, dir, release: true, submit: true);
+      expect(r.code, 65);
+      expect(r.err, contains('without "icon.svg"'));
+    });
+
+    test('the dry-run plan shows the icon as provisional', () async {
+      final w = FakeWorld();
+      final dir = _pluginDir(_manifest({'sidebar_icon': _servedIconUrl}), {
+        'plugin.wasm': _wasmA,
+        'icon.svg': _iconA,
+      });
+      final r = await _publish(w, dir, release: true, dryRun: true);
+      expect(r.code, 0, reason: '$r');
+      expect(w.mutatingCalls, isEmpty);
+      expect(r.out, contains('with plugin.wasm, icon.svg'));
+      expect(
+        _plannedManifest(r.out)['sidebar_icon'],
+        _releaseUrl('v1.0.0', 'icon.svg'),
       );
     });
   });

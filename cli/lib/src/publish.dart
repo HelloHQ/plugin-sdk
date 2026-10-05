@@ -21,9 +21,11 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 
 import 'publish_fetch.dart';
+import 'publish_icon.dart';
 import 'publish_manifest.dart';
 
 export 'publish_fetch.dart';
+export 'publish_icon.dart';
 export 'publish_manifest.dart';
 
 typedef PublishCommandRunner =
@@ -63,6 +65,7 @@ Future<int> runPublish({
   String? bump,
   String? wasmPath,
   String? uiBundlePath,
+  String? iconPath,
   bool release = false,
   String? repo,
   String? tag,
@@ -84,6 +87,7 @@ Future<int> runPublish({
     bump: bump,
     wasmPath: wasmPath,
     uiBundlePath: uiBundlePath,
+    iconPath: iconPath,
     release: release,
     repo: repo,
     tag: tag,
@@ -114,13 +118,30 @@ class _Exit implements Exception {
   final String? message;
 }
 
-/// One artifact the manifest pins: the plugin file or the UI bundle.
+/// One artifact the manifest pins: the plugin file, the UI bundle or the
+/// sidebar icon.
 class _Artifact {
-  _Artifact(this.label, this.urlKey, this.hashKey);
+  _Artifact(
+    this.label,
+    this.urlKey,
+    this.hashKey, {
+    required this.flag,
+    required this.maxBytes,
+    required this.problem,
+  });
 
   final String label;
   final String urlKey;
   final String hashKey;
+
+  /// The `--release` flag that names the local file.
+  final String flag;
+
+  /// The registry's size limit for this artifact.
+  final int maxBytes;
+
+  /// Why some bytes cannot be pinned as this artifact, or null.
+  final String? Function(List<int> bytes) problem;
 
   /// `--release`: the local file to upload, and its bytes.
   String? localPath;
@@ -145,6 +166,7 @@ class _Publisher {
     required this.bump,
     required this.wasmPath,
     required this.uiBundlePath,
+    required this.iconPath,
     required this.release,
     required this.repo,
     required this.tag,
@@ -165,6 +187,7 @@ class _Publisher {
   final String? bump;
   final String? wasmPath;
   final String? uiBundlePath;
+  final String? iconPath;
   final bool release;
   String? repo;
   String? tag;
@@ -195,12 +218,16 @@ class _Publisher {
   String? upstreamRaw;
   bool upstreamKnown = false;
 
-  final _Artifact wasm = _Artifact(
+  late final _Artifact wasm = _Artifact(
     'plugin file',
     'wasm_url',
     'content_hash_sha256',
+    flag: '--wasm',
+    maxBytes: maxArtifactBytes,
+    problem: (b) => pluginFileProblem(b, executionMode),
   );
   _Artifact? ui;
+  _Artifact? icon;
 
   String? headSha;
   bool releaseExists = false;
@@ -287,6 +314,7 @@ class _Publisher {
         if (tag != null) '--tag',
         if (wasmPath != null) '--wasm',
         if (uiBundlePath != null) '--ui-bundle',
+        if (iconPath != null) '--icon',
         if (allowDirty) '--allow-dirty',
       ];
       if (releaseOnly.isNotEmpty) {
@@ -410,7 +438,14 @@ class _Publisher {
       );
     }
     if (uploadUi || hasUiUrl) {
-      ui = _Artifact('UI bundle', 'ui_bundle_url', 'ui_bundle_hash_sha256');
+      ui = _Artifact(
+        'UI bundle',
+        'ui_bundle_url',
+        'ui_bundle_hash_sha256',
+        flag: '--ui-bundle',
+        maxBytes: maxArtifactBytes,
+        problem: artifactHashProblem,
+      );
     }
     if (webview && !uploadUi && !hasUiUrl) {
       throw const _Exit(
@@ -444,6 +479,89 @@ class _Publisher {
         u.url = author['ui_bundle_url'] as String;
       }
     }
+    _resolveIcon();
+  }
+
+  /// The sidebar icon (rules: registry verify-artifacts.mjs, publish_icon.dart).
+  ///
+  /// - An https `sidebar_icon` is downloaded and pinned. With `--release` the
+  ///   local icon (`--icon`, default `./icon.svg` beside manifest.json) is
+  ///   uploaded instead and `sidebar_icon` repointed at the new release; with
+  ///   no local icon the existing URL is pinned as served.
+  /// - With no `sidebar_icon`, an icon is added only by an explicit `--icon`
+  ///   (never silently from a stray ./icon.svg).
+  /// - A relative `sidebar_icon` is a path inside the UI bundle: no hash.
+  /// - Any other scheme is refused.
+  void _resolveIcon() {
+    final raw = author['sidebar_icon'];
+    if (raw != null && raw is! String) {
+      throw const _Exit(65, 'publish: sidebar_icon must be a string.');
+    }
+    final value = raw as String?;
+    final staleHash = author['sidebar_icon_hash_sha256'] != null;
+    if (value != null && isAbsoluteIconUrl(value)) {
+      if (!value.startsWith('https://')) {
+        throw _Exit(
+          65,
+          'publish: sidebar_icon must be an https URL (or a path inside the UI '
+          'bundle); got "$value".',
+        );
+      }
+    } else if (value != null) {
+      if (iconPath != null) {
+        throw _Exit(
+          64,
+          'publish: --icon uploads an icon for an https sidebar_icon, but '
+          'manifest.json\'s sidebar_icon "$value" is a path inside the UI '
+          'bundle. Drop --icon, or remove sidebar_icon to publish the icon '
+          'as a release asset.',
+        );
+      }
+      if (staleHash) {
+        e.writeln(
+          'publish: warning — dropping sidebar_icon_hash_sha256: a bundle-path '
+          'icon is pinned by the UI bundle, not by its own hash.',
+        );
+      }
+      if (uiType != 'webview') {
+        e.writeln(
+          'publish: warning — sidebar_icon "$value" is a path inside the UI '
+          'bundle, but ui_type is "$uiType", so the app shows a generic icon. '
+          'Use an https URL (or --release with an icon.svg).',
+        );
+      }
+      return;
+    } else {
+      if (staleHash) {
+        e.writeln(
+          'publish: warning — dropping sidebar_icon_hash_sha256: '
+          'manifest.json has no sidebar_icon.',
+        );
+      }
+      if (iconPath == null) {
+        if (release && File(p.join(pluginDir, 'icon.svg')).existsSync()) {
+          o.writeln(
+            'publish: note — ./icon.svg is not uploaded: manifest.json has no '
+            'sidebar_icon. Pass --icon icon.svg to publish it as the icon.',
+          );
+        }
+        return;
+      }
+    }
+    final a = icon = _Artifact(
+      'sidebar icon',
+      'sidebar_icon',
+      'sidebar_icon_hash_sha256',
+      flag: '--icon',
+      maxBytes: kMaxIconBytes,
+      problem: (b) => artifactHashProblem(b) ?? svgIconProblem(b),
+    );
+    final local = _resolveLocal(iconPath, 'icon.svg');
+    if (release && (iconPath != null || File(local).existsSync())) {
+      a.localPath = local;
+    } else {
+      a.url = value;
+    }
   }
 
   String _resolveLocal(String? given, String fallback) {
@@ -453,7 +571,11 @@ class _Publisher {
         : p.join(workingDirectory ?? Directory.current.path, given);
   }
 
-  List<_Artifact> get _artifacts => [wasm, if (ui != null) ui!];
+  List<_Artifact> get _artifacts => [
+    wasm,
+    if (ui != null) ui!,
+    if (icon != null) icon!,
+  ];
   List<_Artifact> get _releasedArtifacts =>
       _artifacts.where((a) => a.localPath != null).toList();
 
@@ -594,23 +716,20 @@ class _Publisher {
         throw _Exit(
           66,
           'publish: ${a.label} not found at "${a.localPath}".\n'
-          '  Run `hqplugin build` first, or pass '
-          '${a == wasm ? '--wasm' : '--ui-bundle'} <path>.',
+          '  Run `hqplugin build` first, or pass ${a.flag} <path>.',
         );
       }
       final bytes = file.readAsBytesSync();
-      final problem = a == wasm
-          ? pluginFileProblem(bytes, executionMode)
-          : artifactHashProblem(bytes);
-      if (problem != null) {
-        throw _Exit(65, 'publish: ${a.localPath} $problem.');
-      }
-      if (bytes.length > maxArtifactBytes) {
+      if (bytes.length > a.maxBytes) {
         throw _Exit(
           65,
-          'publish: ${a.localPath} is larger than $maxArtifactBytes bytes '
+          'publish: ${a.localPath} is larger than ${a.maxBytes} bytes '
           '(the registry limit).',
         );
+      }
+      final problem = a.problem(bytes);
+      if (problem != null) {
+        throw _Exit(65, 'publish: ${a.localPath} $problem.');
       }
       final name = p.basename(a.localPath!);
       if (!_assetNamePattern.hasMatch(name)) {
@@ -629,6 +748,19 @@ class _Publisher {
       a
         ..localBytes = bytes
         ..url = _releaseUrl(name);
+    }
+
+    final i = icon;
+    final releasePrefix = 'https://github.com/$repo/releases/download/';
+    if (i != null &&
+        i.localPath == null &&
+        i.url!.startsWith(releasePrefix) &&
+        !i.url!.startsWith('$releasePrefix${Uri.encodeComponent(tag!)}/')) {
+      e.writeln(
+        'publish: warning — sidebar_icon still points at another release '
+        '(${i.url}). Put icon.svg beside manifest.json or pass --icon <path> '
+        'to publish it with $tag.',
+      );
     }
 
     final status = await run('git', [
@@ -788,9 +920,7 @@ class _Publisher {
                     '${a.localPath}; refusing to pin it.',
         );
       }
-      final problem = a == wasm
-          ? pluginFileProblem(bytes, executionMode)
-          : artifactHashProblem(bytes);
+      final problem = a.problem(bytes);
       if (problem != null) {
         throw _Exit(65, 'publish: ${a.urlKey} ${a.url} $problem.');
       }
@@ -813,7 +943,7 @@ class _Publisher {
     final attempts = retries ? _releaseDownloadAttempts : 1;
     for (var attempt = 1; ; attempt++) {
       try {
-        return await downloadHttps(a.url!, httpGet, maxBytes: maxArtifactBytes);
+        return await downloadHttps(a.url!, httpGet, maxBytes: a.maxBytes);
       } on DownloadException catch (ex) {
         if (attempt < attempts && ex.statusCode == 404) {
           await Future<void>.delayed(retryDelay);
@@ -843,6 +973,8 @@ class _Publisher {
       contentHash: wasm.hash,
       uiBundleUrl: ui?.url,
       uiBundleHash: ui?.hash,
+      sidebarIconUrl: icon?.url,
+      sidebarIconHash: icon?.hash,
       firstParty: firstParty,
     );
     final problems = registryManifestProblems(registry);
