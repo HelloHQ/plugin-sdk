@@ -223,6 +223,16 @@ class Check(Base):
         )
         self.assertRejects(tag, "manifest.ui_bundle_url")
 
+    def test_sidebar_icon_points_at_another_tag(self) -> None:
+        # A version bump that forgets the icon URL leaves it on the old
+        # release; the check refuses it like any other release URL.
+        tag = "demo-v1.0.1"
+        self.example(
+            "demo",
+            manifest(tag, "1.0.1", sidebar_icon=f"{DL}/demo-v1.0.0/icon.svg"),
+        )
+        self.assertRejects(tag, "manifest.sidebar_icon")
+
     def test_duplicate_asset_names(self) -> None:
         tag = "demo-v1.0.0"
         self.example(
@@ -344,15 +354,19 @@ class Cli(Base):
 class RealRepo(unittest.TestCase):
     """The examples this repo actually releases pass the check."""
 
-    def test_hello_world_v1_0_0(self) -> None:
-        r = rpc.check("hello-world-v1.0.0", REPO_ROOT)
+    def test_hello_world_v1_0_1(self) -> None:
+        r = rpc.check("hello-world-v1.0.1", REPO_ROOT)
         self.assertEqual(r.dir, "hello-world")
+        self.assertEqual(r.version, "1.0.1")
+        # sidebar_icon is a release URL too, so icon.svg is an asset (and is
+        # listed in SHA256SUMS and the notes by `stage`).
         self.assertEqual(r.assets, ["plugin.wasm", "icon.svg"])
         self.assertTrue((REPO_ROOT / "examples" / "hello-world" / "icon.svg").is_file())
 
     def test_hello_world_wrong_version(self) -> None:
+        # The released 1.0.0 tag no longer matches the manifest.
         with self.assertRaises(rpc.CheckError):
-            rpc.check("hello-world-v1.0.1", REPO_ROOT)
+            rpc.check("hello-world-v1.0.0", REPO_ROOT)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,14 @@ registry's copy of the manifest carries the released hash, which
 `hqplugin publish --first-party` computes from the released file (see
 "Releasing an example plugin" in CONTRIBUTING.md).
 
+`sidebar_icon` is the released `icon.svg`, so the registry's copy also pins
+`sidebar_icon_hash_sha256`: the app downloads the icon once at install, checks
+that hash and draws the local copy. `manifest.json` here has no
+`sidebar_icon_hash_sha256`; `hqplugin publish` downloads the released icon,
+checks it against the registry's SVG rules (at most 64 KiB, no script,
+`foreignObject`, event handler, entity or external reference) and adds the
+hash. Keep `icon.svg` a plain single-path SVG so it passes.
+
 The Rust toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
 (1.99.0), so a release is reproducible: rebuilding the tag with `./build.sh`
 on Linux or macOS gives the same `plugin.wasm` bytes, and so the same SHA-256
