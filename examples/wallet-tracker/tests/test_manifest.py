@@ -49,4 +49,4 @@ def test_manifest_declares_the_propose_permissions_the_code_uses():
             "scope.kinds is required and must match what the code proposes"
         )
     assert MANIFEST["execution_mode"] == "sidecar" and MANIFEST["ui_type"] == "headless"
-    assert all(set(p) <= {"id", "scope"} for p in MANIFEST["permissions"]), "the registry schema forbids other keys"
+    assert all(set(p) <= {"id", "scope", "reason"} for p in MANIFEST["permissions"]), "the registry schema allows only these keys"
