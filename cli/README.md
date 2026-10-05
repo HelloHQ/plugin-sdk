@@ -92,8 +92,8 @@ component traps at runtime in the stream wait, so the fork is required.
 updates) the registry pull request. Run it from the plugin directory (the one
 with `manifest.json`).
 
-The registry pins the SHA-256 of what `wasm_url` and `ui_bundle_url` **serve**,
-so publish never hashes a local file. It downloads each URL (https only,
+The registry pins the SHA-256 of what `wasm_url`, `ui_bundle_url` and an https
+`sidebar_icon` **serve**, so publish never hashes a local file. It downloads each URL (https only,
 redirects followed, at most 64 MiB, the registry's limit), checks that a Wasm
 plugin starts with the `\0asm` magic number (a sidecar ships its `.py`), and
 pins the hash of those bytes. The all-zero placeholder hash is never pinned.
@@ -109,7 +109,8 @@ hqplugin publish --release --bump patch --submit
 
 ### Where the URLs come from
 
-- **Default**: the manifest's `wasm_url` / `ui_bundle_url`, as released.
+- **Default**: the manifest's `wasm_url` / `ui_bundle_url` / `sidebar_icon`,
+  as released.
 - **`--release`**: creates a GitHub Release on the plugin repo with
   `gh release create <tag> <files> --target <HEAD>` and points the URLs at
   `https://github.com/<repo>/releases/download/<tag>/<file>`, then downloads
@@ -117,11 +118,36 @@ hqplugin publish --release --bump patch --submit
   - `--repo owner/name` (default: from `git remote get-url origin`),
     `--tag` (default `v<version>`), `--wasm` (default `./plugin.wasm`, or
     `./plugin.py` for a sidecar), `--ui-bundle` (default `./ui.zip` when
-    `ui_type` is `webview`).
+    `ui_type` is `webview`), `--icon` (see the sidebar icon below).
   - Releases are immutable. If the tag already exists, nothing is uploaded:
     its assets are downloaded and reused when byte-identical to the local
     files, and publish fails otherwise (bump the version).
   - The plugin repo's git tree must be clean (`--allow-dirty` to override).
+
+### Sidebar icon
+
+The app draws a local copy of the icon that it downloaded once at install
+and checked against `sidebar_icon_hash_sha256`; it never loads an unpinned
+icon. So:
+
+- An **https** `sidebar_icon` is downloaded (at most 64 KiB) and must be a
+  plain SVG: no `<script>`, `<foreignObject>`, event-handler attribute,
+  DOCTYPE/entity, `@import`, `javascript:` URL, external `href` / `url()`, or
+  element that loads content (`image`, `use` of another file, `style`, ...).
+  Publish pins `sidebar_icon_hash_sha256` from the served bytes. The rules live
+  in `lib/src/publish_icon.dart`, mirroring the registry's
+  `scripts/verify-artifacts.mjs` (the source of truth).
+- A **relative** `sidebar_icon` is a path inside a WebView plugin's UI bundle:
+  the bundle's hash covers it, so it gets no icon hash (a stale one is
+  dropped).
+- Any other scheme (`http:`, `data:`, `file:` ...) is refused.
+
+With `--release`, an https `sidebar_icon` is re-released with the plugin: the
+local icon (`--icon <path>`, default `./icon.svg`) is uploaded and
+`sidebar_icon` is pointed at the new release, then round-trip hashed. If there
+is no local icon, the existing URL is pinned as served, with a warning when it
+points at another release. A manifest without `sidebar_icon` gets one only from
+an explicit `--icon`; a stray `./icon.svg` is never added on its own.
 
 ### Version
 

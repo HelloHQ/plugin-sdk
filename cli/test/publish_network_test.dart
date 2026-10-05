@@ -1,7 +1,7 @@
 // Opt-in: dry-runs `hqplugin publish` against the REAL released hello-world
 // (https://github.com/HelloHQ/plugin-sdk/releases/tag/hello-world-v1.0.0).
-// It downloads the released plugin.wasm over the network, so it is skipped
-// unless HQPLUGIN_NETWORK_TESTS=1:
+// It downloads the released plugin.wasm and icon.svg over the network, so it
+// is skipped unless HQPLUGIN_NETWORK_TESTS=1:
 //
 //   HQPLUGIN_NETWORK_TESTS=1 dart test test/publish_network_test.dart
 //
@@ -17,29 +17,40 @@ import 'package:test/test.dart';
 
 const _releasedHash =
     '6f2e89607eb6642de832b5ad653408ee00840ad89b26d8cce57aab6af4c22706';
-const _wasmUrl =
-    'https://github.com/HelloHQ/plugin-sdk/releases/download/hello-world-v1.0.0/plugin.wasm';
+const _release =
+    'https://github.com/HelloHQ/plugin-sdk/releases/download/hello-world-v1.0.0';
 
 void main() {
   final enabled = Platform.environment['HQPLUGIN_NETWORK_TESTS'] == '1';
 
   test(
-    'dry run pins the released hello-world plugin.wasm hash',
+    'dry run pins the released hello-world plugin.wasm and icon.svg hashes',
     () async {
-      // The example manifest, as committed (placeholder hash), from the repo.
-      final example = File(
-        p.join(
-          Directory.current.path,
-          '..',
-          'examples',
-          'hello-world',
-          'manifest.json',
-        ),
+      // The example manifest, as committed (placeholder hash), from the repo,
+      // pointed at the released v1.0.0 assets. The version is far above
+      // anything the registry will list, so this stays a plan for an update
+      // whatever the registry holds (the version does not affect the pins).
+      final exampleDir = p.join(
+        Directory.current.path,
+        '..',
+        'examples',
+        'hello-world',
       );
       final manifest =
-          jsonDecode(example.readAsStringSync()) as Map<String, dynamic>;
-      expect(manifest['wasm_url'], _wasmUrl);
+          jsonDecode(
+                File(p.join(exampleDir, 'manifest.json')).readAsStringSync(),
+              )
+              as Map<String, dynamic>;
       expect(manifest['content_hash_sha256'], '0' * 64);
+      expect(manifest.containsKey('sidebar_icon_hash_sha256'), isFalse);
+      manifest
+        ..['version'] = '1000.0.0'
+        ..['wasm_url'] = '$_release/plugin.wasm'
+        ..['sidebar_icon'] = '$_release/icon.svg';
+      // The released icon is the committed one.
+      final iconHash = sha256Hex(
+        File(p.join(exampleDir, 'icon.svg')).readAsBytesSync(),
+      );
 
       final dir = Directory.systemTemp.createTempSync('hqplugin_network_');
       addTearDown(() => dir.deleteSync(recursive: true));
@@ -90,11 +101,13 @@ void main() {
       );
 
       expect(code, 0, reason: 'out:\n$out\nerr:\n$err');
-      // The plan pins the hash of the bytes GitHub served.
-      expect(out.toString(), contains('sha256 $_releasedHash'));
-      expect(hashes.values, contains(_releasedHash));
-      // The registry already lists exactly this, so publishing is a no-op.
-      expect(out.toString(), contains('already in the registry'));
+      // The plan pins the hashes of the bytes GitHub served.
+      // (Keyed by the final hop: GitHub redirects release assets to its CDN.)
+      expect(hashes.values, containsAll([_releasedHash, iconHash]));
+      final plan = out.toString();
+      expect(plan, contains('"content_hash_sha256": "$_releasedHash"'));
+      expect(plan, contains('"sidebar_icon_hash_sha256": "$iconHash"'));
+      expect(plan, contains('plan only'));
       expect(calls.where((c) => !c.endsWith('--version')), [
         'gh api user --jq .login',
         'gh api orgs/HelloHQ/members/hellohq-maintainer --silent',

@@ -166,6 +166,13 @@ class _PublishCommand extends Command<int> {
             '--release: UI bundle to upload. Default: ./ui.zip when '
             'ui_type is webview.',
       )
+      ..addOption(
+        'icon',
+        help:
+            '--release: sidebar icon SVG to upload. Default: ./icon.svg when '
+            'manifest.json has an https sidebar_icon. With no sidebar_icon, '
+            'only an explicit --icon adds one.',
+      )
       ..addFlag(
         'allow-dirty',
         negatable: false,
@@ -205,6 +212,7 @@ class _PublishCommand extends Command<int> {
       tag: a['tag'] as String?,
       wasmPath: a['wasm'] as String?,
       uiBundlePath: a['ui-bundle'] as String?,
+      iconPath: a['icon'] as String?,
       allowDirty: a['allow-dirty'] as bool,
       submit: a['submit'] as bool,
       dryRun: a['dry-run'] as bool,
