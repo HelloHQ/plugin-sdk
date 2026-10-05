@@ -44,6 +44,15 @@ network:fetch (requires network:fetch permission, Verified tier, Tier 1 only)::
 
     ``body_encoding`` is absent (meaning ``"utf8"``) when the response bytes are
     valid UTF-8, and ``"base64"`` otherwise. :func:`fetch` decodes it.
+
+propose (requires propose:holdings and/or propose:valuations, Verified tier, Tier 1)::
+
+    plugin → host: {"type":"propose","seq":N,"batch":{"schema":"hellohq.proposal-batch@1",
+                    "proposals":[…]}}
+    host → plugin: {"type":"propose_response","seq":N,"receipts":[{"index":0,"outcome":"queued"}]}
+    host → plugin: {"type":"propose_response","seq":N,"error":"…","error_code":"…"}
+
+    See :func:`propose` and :mod:`hellohq_plugin_sdk.proposals`.
 """
 
 from __future__ import annotations
@@ -52,15 +61,26 @@ import base64
 import binascii
 import json
 import sys
+from collections.abc import Mapping, Sequence
 from itertools import count
 from typing import Any, TypedDict
 
+from .proposals import (
+    Proposal,
+    ProposalBatch,
+    Receipt,
+    batch_to_wire,
+    error_from_response,
+    parse_receipts,
+)
 from .protocol import (
     ERR_EXECUTION_FAILED,
     TYPE_AI_COMPLETE,
     TYPE_AI_RESPONSE,
     TYPE_HTTP_REQUEST,
     TYPE_HTTP_RESPONSE,
+    TYPE_PROPOSE,
+    TYPE_PROPOSE_RESPONSE,
     TYPE_STORAGE_DELETE,
     TYPE_STORAGE_GET,
     TYPE_STORAGE_RESPONSE,
@@ -147,10 +167,12 @@ def ai_complete(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _rpc(msg: dict[str, Any], expected_type: str) -> dict[str, Any]:
-    """Send *msg* to the host and return the parsed response.
+def _exchange(msg: dict[str, Any], expected_type: str) -> dict[str, Any]:
+    """Send *msg* to the host and return the parsed reply, errors included.
 
-    Raises :exc:`PluginError` on host error or unexpected response type.
+    Raises :exc:`PluginError` if the host closes stdin or answers with the wrong
+    message type or ``seq``. A reply that carries an ``error`` is returned as is
+    (see :func:`_rpc`, and :func:`propose` which maps it to richer errors).
     """
     sys.stdout.write(json.dumps(msg) + "\n")
     sys.stdout.flush()
@@ -169,6 +191,15 @@ def _rpc(msg: dict[str, Any], expected_type: str) -> dict[str, Any]:
             f"{msg['type']}: unexpected host response: {line[:120]}",
             ERR_EXECUTION_FAILED,
         )
+    return result
+
+
+def _rpc(msg: dict[str, Any], expected_type: str) -> dict[str, Any]:
+    """Send *msg* to the host and return the parsed response.
+
+    Raises :exc:`PluginError` on host error or unexpected response type.
+    """
+    result = _exchange(msg, expected_type)
 
     if "error" in result:
         raise PluginError(
@@ -384,3 +415,71 @@ def _decode_body(wire: Any, encoding: Any) -> tuple[str | bytes, bytes]:
         "upgrade hellohq-plugin-sdk)",
         ERR_EXECUTION_FAILED,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Propose-only writes (propose:holdings / propose:valuations, Verified, Tier 1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def propose(
+    batch: ProposalBatch | Sequence[Proposal] | Mapping[str, Any],
+) -> list[Receipt]:
+    """Suggest holdings and values for the person to review.
+
+    Nothing is written until the person approves each suggestion in the host
+    UI. The plugin never learns an item id, a current value or an approval
+    decision: it gets one :class:`~hellohq_plugin_sdk.proposals.Receipt`
+    ``(index, outcome, reason)`` per proposal, in order, saying whether the
+    suggestion was queued, was already pending, replaced an older one, matches
+    what the person already approved, was declined before, or was invalid
+    (with a host reason code).
+
+    Requires ``propose:holdings`` and/or ``propose:valuations`` in the manifest
+    (Verified tier; ``scope.kinds`` lists the asset kinds a holding may use).
+    The host validates and stamps the batch itself; nothing here replaces that
+    (:mod:`hellohq_plugin_sdk.proposal_validation` can pre-check client-side).
+    A call counts against 10 a minute and 100 a day per plugin per workspace,
+    holds at most 200 proposals (50 holdings) and 256 KiB, and at most 500
+    suggestions may await review.
+
+    Args:
+        batch: A :class:`~hellohq_plugin_sdk.proposals.ProposalBatch`, a list of
+            :class:`~hellohq_plugin_sdk.proposals.Holding` /
+            :class:`~hellohq_plugin_sdk.proposals.Valuation` (or wire ``dict``)
+            proposals, or a ``{"schema": "hellohq.proposal-batch@1",
+            "proposals": [...]}`` mapping, sent as given.
+
+    Returns:
+        One receipt per proposal, ``receipts[i].index == i``.
+
+    Raises:
+        ProposePermissionDenied: no ``propose:*`` grant for this plugin here, or
+            not a Verified plugin.
+        ProposeUnsupported: the host answered ``unknown_method``.
+        ProposeRateLimited: over the call rate; ``retryable`` is True.
+        ProposeQuotaExceeded: too many suggestions awaiting review.
+        ProposeTooLarge / ProposeTooMany: split the batch.
+        ProposeBadRequest: the batch is malformed as a whole (``reason`` says why).
+        ProposeWorkspaceUnavailable / ProposeHostError: host-side failure.
+        PluginError: the host closed stdin, or sent a reply that is not a valid
+            ``propose_response`` (every ``Propose*`` error is a ``PluginError``).
+
+    Note:
+        A Tier 1 host that predates ``propose`` (before hellohq's propose-only
+        writes) does not recognise the message and **never answers**, so this
+        call would block until the host's own timeout ends the run: there is no
+        handshake to detect it first. Declare a ``min_host_version`` that has
+        propose in the manifest rather than probing at run time.
+    """
+    wire = batch_to_wire(batch)
+    count_sent = (
+        len(wire["proposals"]) if isinstance(wire.get("proposals"), list) else None
+    )
+    seq = next(_seq_counter)
+    reply = _exchange(
+        {"type": TYPE_PROPOSE, "seq": seq, "batch": wire}, TYPE_PROPOSE_RESPONSE
+    )
+    if "error" in reply or "error_code" in reply:
+        raise error_from_response(reply)
+    return parse_receipts(reply.get("receipts"), expected=count_sent)

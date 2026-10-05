@@ -6,15 +6,16 @@ and asset, with quantity, provenance and, for BTC only, an optional fiat
 value). The plugin never sees item ids and never writes anything: the person
 approves each proposal in the app.
 
-> **Status: pending host support.** The two permissions this plugin needs,
-> `propose:holdings` and `propose:valuations`, are designed on the host side
-> but **not built**. Until they ship, the plugin cannot submit proposals,
-> `manifest.json` will not pass the registry schema (its permission-id enum
-> does not contain them), and nothing here is publishable. What works today is
-> everything up to the proposal batch, tested against fixtures and a recording
-> fake host. See [Blocked on host support](#blocked-on-host-support).
+> **Requires a host that has propose-only writes** (hellohq with plugins
+> enabled; hellohq PR #113). The plugin submits its proposals with
+> `hellohq_plugin_sdk.host.propose` (SDK >= 0.2.0) and the person approves each
+> one in the app's Suggestions inbox. On a host that answers `unknown_method`
+> the scan still returns its balances and proposals as data
+> (`submission.status = "host_unsupported"`). A Tier 1 host that predates
+> `propose` does not answer at all, so the manifest's `min_host_version` is the
+> real gate. See [Requirements](#requirements).
 
-## What works today
+## What works
 
 | Capability | State |
 |---|---|
@@ -26,23 +27,23 @@ approves each proposal in the app.
 | BTC fiat valuation = quantity x price from `mempool.space/api/v1/prices`, rounded once (half-even) to the currency's minor unit | works, but the price response **shape is unverified** (see below) |
 | Sequential, paced, cached requests with jittered exponential backoff and `Retry-After` (fake-clock tested) | works |
 | Proposal construction with provenance on every proposal, pre-flight validation, host-sized batching (<= 200 proposals, <= 50 holdings per batch) | works |
-| Submitting proposals to the host | **blocked** (no host API) - the sidecar returns the batches as data and reports `submission.status = "host_unsupported"` |
+| Submitting proposals to the host | works: `host.propose`, one receipt per proposal in `submission.receipts` (`queued`, `duplicate`, `superseded_older`, `unchanged`, `suppressed`, `invalid` + reason); refusals and a host without `propose` degrade to data (see [Submission](#submission)) |
 | Sidecar packaging (`build.sh` -> one-file `dist/plugin.py`) | works |
 | Install / registry publish / display of results | **blocked** (plugin system production hold, signing, no UI half here) |
 
-## Blocked on host support
+## Requirements
 
-1. **`propose:holdings` / `propose:valuations`** and the call that submits a
-   batch. Nothing like it exists in the SDK, the protocol or the mock host, and
-   this example deliberately does not invent it: `SdkHost.propose` raises
-   `HostUnsupported`. The batch shape in `wallet_tracker/proposals.py`
-   (`hellohq.proposal-batch@1`) follows the host-side design and **may change**
-   when the host ships it. When it exists, the only change needed is
-   `SdkHost.propose` (about five lines) plus re-checking the field rules.
-2. **Manifest acceptance.** `manifest.json` declares the two `propose:*`
-   permissions with `scope.kinds = ["crypto_ticker"]`. The current registry
-   schema has no such ids and `additionalProperties: false`, so CI would
-   reject it. Declared here so the intended permission set is reviewable.
+1. **A host with propose-only writes**: hellohq with plugins enabled (the
+   `propose` host call, per-workspace consent, the Suggestions inbox) and a
+   Python SDK >= 0.2.0 in the sidecar runtime. `SdkHost.propose` is the only
+   place the plugin touches it.
+2. **Manifest.** `manifest.json` validates against the registry's manifest
+   schema (`tests/test_manifest.py`). It declares `propose:holdings` and
+   `propose:valuations` with the required `scope.kinds = ["crypto_ticker"]`
+   (the add-asset tile id this plugin proposes) and `network:fetch` with its
+   three origins. The registry schema allows only `id` and `scope` on a
+   permission, so there is no per-permission `reason` text; what each
+   permission is for is in this README. `ui_type` is `headless`.
 3. **Verified tier.** A Tier-1 sidecar, `network:fetch` on a sidecar and the
    `propose:*` permissions are all Verified-only, and sidecars are
    desktop-only. The tier is assigned by the registry team; the manifest does
@@ -52,7 +53,34 @@ approves each proposal in the app.
 5. **Where entered addresses are kept.** The plugin holds no state. A real
    product needs per-workspace plugin storage (`plugin:storage`, shared across
    workspaces on the device today) or a host-owned address list. Not added, to
-   avoid declaring a permission the plan does not need yet.
+   avoid declaring a permission the plugin does not need yet.
+
+What the permissions are for (shown to the person at install by the host):
+`network:fetch` reads public balances for the addresses you enter from
+mempool.space, Blockstream Esplora and the Solana public RPC;
+`propose:holdings` may suggest new crypto holdings and `propose:valuations` a
+dated value for a holding. Nothing is saved until you approve it.
+
+## Submission
+
+`scan` hands each batch to the host and reports what came back in
+`submission` (the proposals themselves are always in the report too):
+
+| `status` | When |
+|---|---|
+| `submitted` | every batch was answered; `receipts` has one row per proposal (`batch`, `index`, `source_key`, `kind`, `outcome`, `reason` for `invalid`) and `summary` counts the outcomes |
+| `host_unsupported` | the host answered `unknown_method` (or the installed SDK has no `propose`): nothing was sent |
+| `permission_denied` | no usable `propose:*` grant here (not granted in this workspace, not Verified) |
+| `failed` | the host refused or errored: `code` is its code (`rate_limit_exceeded`, `quota_exceeded`, `too_large`, `bad_request` + `reason`, `workspace_unavailable`, `host_error`), `retryable` says whether a later run can succeed, and `unsubmitted_batches` counts the batches not sent (a refusal stops the rest) |
+| `not_requested` / `nothing_to_submit` | `submit` was false / there was nothing to propose |
+
+A proposal the host marks `invalid` is also listed in `issues`
+(`proposal_invalid`, with the host's reason code): the host's validator, not
+the plugin's pre-flight, decides. `tests/test_sidecar_e2e.py` runs the bundled
+`plugin.py` as a real sidecar against a fake host that answers `http_request`
+and `propose` over NDJSON (every outcome and refusal). `hqplugin test
+--sidecar` can start the plugin, but its mock host answers fetches with a stub,
+so a scan finds nothing to propose there.
 
 ## Tier and language choice
 
@@ -81,7 +109,7 @@ package.
 plugin.py                 sidecar entry (thin adapter, SDK imports live here)
 wallet_tracker/
   host.py                 narrow Host interface: fetch + propose; Clock
-  sdk_host.py             production Host over hellohq_plugin_sdk
+  sdk_host.py             production Host over hellohq_plugin_sdk (fetch, propose)
   addresses.py            BTC + Solana validation (base58check, bech32/bech32m)
   btc.py                  mempool.space / Esplora builders + parsers
   solana.py               JSON-RPC builders + parsers
@@ -184,14 +212,12 @@ behaviour, provenance on every proposal, no-float money, request shapes
 
 ## Requests for shared files and protocol (not made here)
 
-* Registry schema / protocol: add `propose:holdings`, `propose:valuations` (with
-  `scope.kinds`) once the host ships them.
-* SDK: a `propose` host call in `sdks/python` (and the NDJSON schema), and a
-  `Decimal`-aware JSON helper would remove the `parse_float` boilerplate.
-* `README.md` examples index and `.github/workflows/ci.yml`: add this example
-  (`uv sync --group dev && uv run pytest && uv run ruff check .` in
-  `examples/wallet-tracker`).
-* `mock-host`: no propose support; the Dart mock cannot exercise submission.
+* The registry schema forbids a per-permission `reason`, which the app's
+  manifest model reads for the install dialog. Allow it, or drop it from the
+  model.
+* `README.md` examples index: add this example.
+* A `Decimal`-aware JSON helper in the SDK would remove the `parse_float`
+  boilerplate.
 
 ## Open questions
 

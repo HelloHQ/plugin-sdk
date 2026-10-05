@@ -1,6 +1,7 @@
 # Property Value Estimates - Tier-1 Python sidecar
 
-**Status: core built and tested; manifest is "pending host support".** Information only:
+**Requires a host that has propose-only writes (hellohq with plugins enabled) to submit a
+value; the estimates need no such host.** Information only:
 this plugin summarises recent *comparable sales* (median and percentiles) for an area and
 property type the person chooses. It is **not a valuation, appraisal or advice**, and every
 output says so.
@@ -12,21 +13,31 @@ output says so.
 | France (`fr_dvf`) | DVF, geolocated CSV per commune and year (Etalab) | fetched from `files.data.gouv.fr` (follows its one redirect to object storage) |
 | Ireland (`ie_ppr`) | Property Services Regulatory Authority, Residential Property Price Register | **CSV the person downloads and provides**; never fetched |
 
-## What works today
+## What works
 
 Everything in the pure core, against fixtures and an in-memory fake host (`tests/fakes.py`):
 query builders, response and CSV parsers, normalisation, the estimator, validation,
-provenance, attribution, the rate limiter, and building (not sending) a propose-only valuation.
-`python3 -m pytest` runs 136 tests with no network; `ruff check .` and `ruff format --check .`
-are clean.
+provenance, attribution, the rate limiter, and building and submitting a propose-only
+valuation. `python3 -m pytest` runs 180+ tests with no network; `ruff check .` and
+`ruff format --check .` are clean.
 
-## Blocked on the host ("pending host support")
+## Requires host support
 
-* **`propose:valuations`**: the host's propose-only write API is designed but not built.
-  `manifest.json` declares the permission (`kinds: ["home"]`) so reviewers see the intent, but
-  today's registry schema does not accept it (see "Manifest" below). The adapter's `propose`
-  function builds the proposal and then fails with the code `pending_host_support`; nothing is
-  sent. No SDK, ABI or protocol change was made to fake it.
+* **`propose:valuations`** (propose-only writes, `kinds: ["home"]`): the adapter's `propose`
+  function builds the proposal and submits it with `hellohq_plugin_sdk.host.propose` (SDK
+  >= 0.2.0). The person approves it in the app's Suggestions inbox; nothing is saved before
+  that. The result is `{"estimate", "proposal", "submission"}` where `submission.status` is
+  `submitted` (one receipt: `queued`, `duplicate`, `superseded_older`, `unchanged`,
+  `suppressed` or `invalid` + a host reason code), `pending_host_support` (the host answered
+  `unknown_method`, or the SDK predates `propose`: nothing was sent, the proposal is returned
+  as data; this needs a host with propose-only writes), `permission_denied` (no usable grant
+  here) or `failed` (rate limit, pending quota, ...: `code` and `retryable` say why). A Tier 1
+  host that predates `propose` does not answer at all, so the manifest's `min_host_version` is
+  the real gate. Only the wire fields (`kind`, `source_key`, `value`, `as_of`, `method`,
+  `source`) are sent; the preview's `confidence`, `rounding`, `disclaimer` and `attribution`
+  stay in the report because the host refuses unknown fields. For `ie_ppr` (a CSV the person
+  provides) `source.origin` is the publisher, `propertypriceregister.ie`; the host labels it
+  "source not observed" because the plugin never fetched it.
 * **`read:external_input`** (planned permission, `csv` files): needed so the person can pick the
   Ireland PPR CSV (or a UK Price Paid CSV). Until it exists the CSV text must come from the UI
   as `csv_text`.
@@ -119,7 +130,7 @@ test suite (tests never use the network).
 
 It follows the existing networked examples (`fx-advisor`, `portfolio-analyst`): the Python SDK
 is the only one with a `fetch` host call today, `decimal`/`fractions`/`csv` make exact money and
-bulk parsing simple, and the future propose call is also shaped around the Python SDK. Costs:
+bulk parsing simple, and `host.propose` is a Python SDK call. Costs:
 Tier 1 needs the Verified tier and desktop only, and the registry artifact is one `plugin.py`,
 so `bundle.py` concatenates the tested package plus the thin adapter (a test executes the
 bundle). A Tier-2 Rust/Go port would be possible once a world carries both `wasi:http` and
@@ -132,7 +143,7 @@ plugin.py                 thin sidecar adapter (SDK host calls -> narrow Host in
 property_estimates/       pure core: money, ratelimit, stats, estimate, transport, one module
                           per region, proposal, service, hostapi (the Host interface)
 bundle.py, build.sh       single-file bundle -> dist/plugin.py (+ sha256 for the manifest)
-manifest.json             exact origins, permissions (propose/read_external_input pending)
+manifest.json             exact origins, permissions
 tests/                    fixtures from documented shapes (synthetic addresses), fakes, tests
 ```
 
@@ -140,15 +151,15 @@ tests/                    fixtures from documented shapes (synthetic addresses),
 
 Permissions: `network:fetch` (origins `data.gov.sg`, `landregistry.data.gov.uk`,
 `files.data.gouv.fr`, `geo-dvf.s3.sbg.io.cloud.ovh.net`; no wildcards), `read:external_input`
-(csv), `propose:valuations` (kinds `home`). Checked against the registry's current
-`manifest.schema.json`: everything validates **except** that `propose:valuations` is not yet in
-its permission-id enum (expected, host support pending). `trust_tier` is not set (registry-assigned);
-the artifact hash is the usual placeholder.
+(csv), `propose:valuations` (kinds `home`). It validates against the registry's
+`manifest.schema.json` (`tests/test_registry_schema.py`; `ui_type` is `declarative`, set
+explicitly). `trust_tier` is not set (registry-assigned); the artifact hash is the usual
+placeholder.
 
 ## Run
 
 ```bash
-python3 -m pytest          # 136 tests, no network (sockets are blocked in tests)
+python3 -m pytest          # 180+ tests, no network (sockets are blocked in tests)
 ruff check . && ruff format --check .
 ./build.sh                 # writes dist/plugin.py and prints its sha256
 ```

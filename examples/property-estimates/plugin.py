@@ -10,12 +10,17 @@ file is a thin adapter from the sidecar SDK to the package's narrow ``Host`` int
 
 Functions (``host.compute(fn, args)`` from a UI, or the sidecar ``input.function``):
 - ``estimate``: args = {region, ...region fields..., include_proposal_preview?}
-- ``propose``:  same args; builds the proposal and hands it to the host. PENDING HOST
-  SUPPORT: until the host's propose API exists this returns the error code
-  ``pending_host_support`` and sends nothing.
+- ``propose``:  same args; builds the proposal and hands it to the host with
+  ``hellohq_plugin_sdk.host.propose`` (SDK >= 0.2.0). Returns
+  ``{"estimate", "proposal", "submission"}``: ``submission.status`` is ``submitted`` (one
+  receipt per proposal: queued, duplicate, superseded_older, unchanged, suppressed or invalid +
+  reason), ``pending_host_support`` (the host has no ``propose``: nothing was sent; needs a host
+  with propose-only writes, hellohq with plugins enabled), or ``permission_denied`` / ``failed``
+  (the host refused the call; ``code`` and ``retryable`` say why). The person approves each
+  suggestion in the app; nothing is saved before that.
 
-Permissions required: network:fetch (4 origins, see manifest.json). Pending host support:
-propose:valuations, read:external_input.
+Permissions required: network:fetch (4 origins, see manifest.json), propose:valuations
+(scope.kinds ["home"]), read:external_input (csv).
 """
 
 from __future__ import annotations
@@ -27,8 +32,15 @@ from typing import Any
 from hellohq_plugin_sdk import PluginError, UnsupportedFunction, host, serve
 from hellohq_plugin_sdk.protocol import ERR_EXECUTION_FAILED, ERR_INVALID_INPUT
 
-from property_estimates.errors import ParseError, PluginCoreError, ValidationError
+from property_estimates.errors import (
+    ParseError,
+    PendingHostSupport,
+    PluginCoreError,
+    ProposeRefused,
+    ValidationError,
+)
 from property_estimates.hostapi import FetchRequest, FetchResponse, Receipt
+from property_estimates.proposal import build_valuation_proposal, to_wire
 from property_estimates.service import estimate_property, submit_proposal
 
 
@@ -55,8 +67,23 @@ class SidecarHost:
         )
 
     def propose(self, proposals: Any) -> list[Receipt]:
-        # No SDK call exists for this yet; do not invent one. See README "Blocked on host".
-        raise NotImplementedError
+        try:
+            from hellohq_plugin_sdk.proposals import ProposeError, ProposeUnsupported
+        except ImportError as exc:  # an SDK older than 0.2.0 has no propose
+            raise PendingHostSupport(
+                "the installed hellohq-plugin-sdk has no propose (needs >= 0.2.0); nothing was sent"
+            ) from exc
+        try:
+            receipts = host.propose(list(proposals))
+        except ProposeUnsupported as exc:
+            raise PendingHostSupport(
+                "the host does not support propose (it needs propose-only writes); nothing was sent"
+            ) from exc
+        except ProposeError as exc:
+            raise ProposeRefused(
+                exc.message, code=exc.code, reason=exc.reason, retryable=exc.retryable
+            ) from exc
+        return [Receipt(index=r.index, outcome=str(r.outcome), reason=r.reason) for r in receipts]
 
     def now(self) -> datetime:
         return datetime.now(UTC)
@@ -82,7 +109,9 @@ def dispatch(function: str, args: Any):
     if fn == "propose":
         sidecar_host = SidecarHost()
         result = _guard(estimate_property, sidecar_host, fn_args)
-        return {"estimate": result, "receipts": _guard(submit_proposal, sidecar_host, result)}
+        submission = _guard(submit_proposal, sidecar_host, result)
+        proposal = build_valuation_proposal(result, region=str(result.get("region", "")))
+        return {"estimate": result, "proposal": to_wire(proposal), "submission": submission}
     raise UnsupportedFunction(fn)
 
 

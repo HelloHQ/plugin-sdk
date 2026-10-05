@@ -46,13 +46,25 @@ Handler = Callable[[str, str, str], "HttpResponse | Exception | None"]
 
 
 class FakeHost:
-    """Records every fetch/propose. ``handler(method, url, body)`` decides replies."""
+    """Records every fetch/propose. ``handler(method, url, body)`` decides replies.
 
-    def __init__(self, handler: Handler | None = None, *, supports_propose: bool = True) -> None:
+    ``propose_script`` scripts the host's answer to each ``propose`` call in order: a
+    list of receipt dicts, or an exception to raise. Calls past the end of the script
+    (and every call when it is ``None``) answer ``queued`` for every proposal.
+    """
+
+    def __init__(
+        self,
+        handler: Handler | None = None,
+        *,
+        supports_propose: bool = True,
+        propose_script: list[Any] | None = None,
+    ) -> None:
         self.handler = handler or (lambda m, u, b: None)
         self.calls: list[tuple[str, str, Mapping[str, str], str]] = []
         self.batches: list[Mapping[str, Any]] = []
         self.supports_propose = supports_propose
+        self.propose_script = list(propose_script or [])
 
     def fetch(self, method, url, headers=None, body=""):
         self.calls.append((method, url, dict(headers or {}), body))
@@ -67,6 +79,11 @@ class FakeHost:
         if not self.supports_propose:
             raise HostUnsupported("propose is not available")
         self.batches.append(batch)
+        if self.propose_script:
+            step = self.propose_script.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return step
         return [{"index": i, "outcome": "queued"} for i, _ in enumerate(batch["proposals"])]
 
 

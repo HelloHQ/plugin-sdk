@@ -60,6 +60,31 @@ class ProposalRefused(PluginCoreError):
 
 
 class PendingHostSupport(PluginCoreError):
-    """The host operation exists in the design but is not built yet."""
+    """The host does not offer ``propose`` (it answered ``unknown_method``, or the installed
+    SDK predates it). The graceful fallback: nothing was sent, the proposal is returned as data.
+    Needs a host with propose-only writes (hellohq with plugins enabled)."""
 
     code = "pending_host_support"
+
+
+class ProposeRefused(PluginCoreError):
+    """The host refused the whole ``propose`` call; nothing was queued.
+
+    ``code`` is the host's error code (``permission_denied``, ``rate_limit_exceeded``,
+    ``quota_exceeded``, ``too_large``, ``bad_request`` ...), ``reason`` its reason code for
+    ``bad_request``, ``retryable`` whether a later run can succeed with the same proposal.
+    """
+
+    code = "propose_refused"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        reason: str | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.reason = reason
+        self.retryable = retryable

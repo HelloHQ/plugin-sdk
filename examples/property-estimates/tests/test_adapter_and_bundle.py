@@ -9,6 +9,16 @@ import pytest
 from fakes import NOW
 from fixtures import sg_page, sg_record
 from hellohq_plugin_sdk import PluginError, UnsupportedFunction
+from hellohq_plugin_sdk.proposals import (
+    Outcome,
+    ProposeBadRequest,
+    ProposeHostError,
+    ProposePermissionDenied,
+    ProposeQuotaExceeded,
+    ProposeRateLimited,
+    ProposeUnsupported,
+    Receipt,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -64,14 +74,101 @@ def test_invalid_input_maps_to_plugin_error(plugin):
     assert ei.value.code == "invalid_input" and "[invalid_input]" in ei.value.message
 
 
-def test_propose_is_pending_host_support_and_sends_nothing(plugin, monkeypatch):
+def _propose_args():
+    return _args("propose", region="sg_hdb", town="BISHAN", flat_type="4 ROOM")
+
+
+def _with_sales(plugin, monkeypatch):
     page = sg_page([sg_record("2026-08", 500_000 + i * 1000, area="90") for i in range(40)])
     monkeypatch.setattr(
         plugin.host, "fetch", lambda url, **kw: {"status": 200, "headers": {}, "body": page}
     )
-    with pytest.raises(PluginError) as ei:
-        plugin.dispatch("run", _args("propose", region="sg_hdb", town="BISHAN", flat_type="4 ROOM"))
-    assert "pending_host_support" in ei.value.message
+
+
+def test_propose_submits_through_the_sdk_and_reports_receipts(plugin, monkeypatch):
+    _with_sales(plugin, monkeypatch)
+    sent = []
+
+    def fake_propose(batch):
+        sent.append(batch)
+        return [Receipt(0, Outcome.QUEUED)]
+
+    monkeypatch.setattr(plugin.host, "propose", fake_propose)
+    out = plugin.dispatch("run", _propose_args())
+    assert json.loads(json.dumps(out)) == out
+    assert out["submission"] == {
+        "status": "submitted",
+        "receipts": [{"index": 0, "outcome": "queued"}],
+    }
+    (proposal,) = sent[0]
+    assert out["proposal"] == proposal and out["estimate"]["status"] == "ok"
+    assert set(proposal) == {"kind", "source_key", "value", "as_of", "method", "source"}
+    assert proposal["as_of"] == "2026-10-04T00:00:00Z"
+
+
+@pytest.mark.parametrize("outcome", ["duplicate", "superseded_older", "unchanged", "suppressed"])
+def test_propose_reports_every_other_outcome(plugin, monkeypatch, outcome):
+    _with_sales(plugin, monkeypatch)
+    monkeypatch.setattr(plugin.host, "propose", lambda batch: [Receipt(0, Outcome(outcome))])
+    out = plugin.dispatch("run", _propose_args())
+    assert out["submission"]["receipts"] == [{"index": 0, "outcome": outcome}]
+
+
+def test_propose_reports_an_invalid_receipt_with_its_reason(plugin, monkeypatch):
+    _with_sales(plugin, monkeypatch)
+    monkeypatch.setattr(
+        plugin.host,
+        "propose",
+        lambda batch: [Receipt(0, Outcome.INVALID, "fetched_at_outside_run")],
+    )
+    out = plugin.dispatch("run", _propose_args())
+    assert out["submission"]["receipts"] == [
+        {"index": 0, "outcome": "invalid", "reason": "fetched_at_outside_run"}
+    ]
+
+
+def test_unknown_method_is_the_pending_host_support_fallback(plugin, monkeypatch):
+    _with_sales(plugin, monkeypatch)
+
+    def refuse(batch):
+        raise ProposeUnsupported("unknown_method:propose", "unknown_method")
+
+    monkeypatch.setattr(plugin.host, "propose", refuse)
+    out = plugin.dispatch("run", _propose_args())
+    assert out["submission"]["status"] == "pending_host_support"
+    assert out["submission"]["receipts"] == []
+    assert out["estimate"]["status"] == "ok" and out["proposal"]["kind"] == "valuation"
+
+
+def test_an_sdk_without_propose_is_the_same_fallback(plugin, monkeypatch):
+    _with_sales(plugin, monkeypatch)
+    monkeypatch.setitem(sys.modules, "hellohq_plugin_sdk.proposals", None)  # SDK < 0.2.0
+    out = plugin.dispatch("run", _propose_args())
+    assert out["submission"]["status"] == "pending_host_support"
+    assert ">= 0.2.0" in out["submission"]["message"]
+
+
+@pytest.mark.parametrize(
+    "error,status,retryable",
+    [
+        (ProposePermissionDenied("no grant", "permission_denied"), "permission_denied", False),
+        (ProposeRateLimited("slow", "rate_limit_exceeded"), "failed", True),
+        (ProposeQuotaExceeded("full", "quota_exceeded"), "failed", True),
+        (ProposeBadRequest("bad", "bad_request", "bad_schema"), "failed", False),
+        (ProposeHostError("boom", "host_error"), "failed", False),
+    ],
+)
+def test_refusals_are_reported_as_data(plugin, monkeypatch, error, status, retryable):
+    _with_sales(plugin, monkeypatch)
+
+    def refuse(batch):
+        raise error
+
+    monkeypatch.setattr(plugin.host, "propose", refuse)
+    out = plugin.dispatch("run", _propose_args())
+    sub = out["submission"]
+    assert (sub["status"], sub["code"], sub["retryable"]) == (status, error.code, retryable)
+    assert sub["receipts"] == [] and out["estimate"]["status"] == "ok"
 
 
 def test_http_failure_is_a_clean_error(plugin, monkeypatch):

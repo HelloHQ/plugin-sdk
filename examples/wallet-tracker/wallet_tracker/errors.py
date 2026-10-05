@@ -46,6 +46,25 @@ class HostUnsupported(HostError):
     code = "unsupported"
 
 
+class ProposeRefused(HostError):
+    """The host refused a whole ``propose`` call; nothing in it was queued.
+
+    ``code`` is the host's error code (``permission_denied``,
+    ``rate_limit_exceeded``, ``quota_exceeded``, ``too_large``, ...);
+    ``reason`` is its reason code for ``bad_request``. ``retryable`` says a
+    later run can succeed with the same batch.
+    """
+
+    code = "propose_refused"
+
+    def __init__(
+        self, message: str, code: str | None = None, *, reason: str | None = None, retryable: bool = False
+    ) -> None:
+        super().__init__(message, code)
+        self.reason = reason
+        self.retryable = retryable
+
+
 class FetchError(HostError):
     """A fetch was denied, failed in transport, or returned a bad status."""
 

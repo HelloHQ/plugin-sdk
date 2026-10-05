@@ -38,3 +38,30 @@ with `MockPortfolio` / `MockSheet` / `MockSection` / `MockItem` /
 dart pub get
 dart test
 ```
+
+## Tier 1 `propose` (a mock)
+
+`MockSidecarHost` answers the Tier 1 NDJSON `propose` message so
+`hqplugin test --sidecar` can exercise a plugin that proposes holdings and
+values. It accepts a valid batch and returns one receipt per proposal
+(`queued`, `duplicate`, `superseded_older`, or `invalid` with a reason code),
+and refuses what the real host refuses (`permission_denied`, `bad_request`,
+`too_many`, `too_large`, `rate_limit_exceeded`, `quota_exceeded`) using the same
+closed code set as `plugin-protocol`'s `host-calls.schema.json`.
+
+```dart
+final host = MockSidecarHost(
+  // A propose grant needs its kinds, as the manifest's scope.kinds does.
+  granted: ['propose:holdings=crypto_ticker,home', 'propose:valuations=home'],
+);
+// ... drive the plugin's stdout lines through host.handleLine(...) ...
+host.proposer.queued; // every proposal accepted this run, in memory only
+```
+
+It is a mock: nothing is saved, there is no review UI, binding or rejection
+memory, and it approximates the host's validator (it does not know the host's
+currency lists and does not check that `source.origin` was fetched this run).
+`unchanged` and `suppressed` depend on the person's data, so force them with
+`MockProposer(forcedOutcomes: {'<source_key>': 'unchanged'})`. The real host
+wins any disagreement.
+

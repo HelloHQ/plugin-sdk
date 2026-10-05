@@ -15,7 +15,7 @@ from typing import Any
 
 from wallet_tracker import btc, solana
 from wallet_tracker.addresses import parse_btc_address, parse_solana_address
-from wallet_tracker.errors import CoreError, HostUnsupported, ValidationError
+from wallet_tracker.errors import CoreError, HostUnsupported, ProposeRefused, ValidationError
 from wallet_tracker.host import Clock, Host, SystemClock, iso_utc
 from wallet_tracker.money import CURRENCY_EXPONENTS, assert_no_floats, fiat_value, format_units
 from wallet_tracker.polite import OriginPolicy, PoliteClient
@@ -358,7 +358,9 @@ class _Scan:
                         symbol=None,
                         chain="solana",
                         quantity=quantity,
-                        unit=f"mint:{item.mint}",
+                        unit=short_address(
+                            item.mint
+                        ),  # the host allows [A-Za-z0-9._-]{1,16}; source_key carries the full mint
                         as_of=fetched,
                         provenance=self._sol_provenance("getTokenAccountsByOwner", slot, address, fetched),
                     )
@@ -390,11 +392,14 @@ def scan(
             run.issues.append(_issue(f"proposal_{exc.code}", proposal.get("source_key", "?")[:80], exc.message))
 
     batch_list = batches(valid)
-    submission: dict[str, Any] = {"status": "not_requested", "receipts": []}
+    submission: dict[str, Any] = {"status": "not_requested", "receipts": [], "summary": {}}
     if request.submit and batch_list:
         submission = _submit(host, batch_list)
+        for row in submission["receipts"]:
+            if row["outcome"] == "invalid":  # the host's validator disagreed with ours: say so, never hide it
+                run.issues.append(_issue("proposal_invalid", row["source_key"][:80], row.get("reason") or "invalid"))
     elif request.submit:
-        submission = {"status": "nothing_to_submit", "receipts": []}
+        submission = {"status": "nothing_to_submit", "receipts": [], "summary": {}}
 
     notes: list[str] = []
     if request.solana_addresses:
@@ -415,16 +420,66 @@ def scan(
 
 
 def _submit(host: Host, batch_list: list[dict[str, Any]]) -> dict[str, Any]:
-    receipts: list[Any] = []
-    for batch in batch_list:
+    """Hand each batch to the host and map its receipts back onto the proposals.
+
+    ``status`` is one of: ``submitted`` (every batch was answered; per-proposal
+    ``outcome`` is in ``receipts``), ``host_unsupported`` (the host has no
+    ``propose``: the proposals stay in the report), ``permission_denied`` (the
+    plugin holds no usable ``propose:*`` grant here), ``failed`` (the host
+    refused or errored; ``code`` is its code and ``retryable`` says whether a
+    later run can succeed). After a refusal the remaining batches are not sent.
+    """
+    rows: list[dict[str, Any]] = []
+    sent = 0
+    for number, batch in enumerate(batch_list):
         try:
-            receipts.extend(host.propose(batch))
+            receipts = host.propose(batch)
         except HostUnsupported as exc:
-            return {
-                "status": "host_unsupported",
-                "message": exc.message + "; proposals are returned in this report instead",
-                "receipts": [],
-            }
+            return _submission("host_unsupported", rows, batch_list, sent, message=exc.message)
+        except ProposeRefused as exc:
+            status = "permission_denied" if exc.code == "permission_denied" else "failed"
+            return _submission(
+                status,
+                rows,
+                batch_list,
+                sent,
+                message=exc.message,
+                code=exc.code,
+                reason=exc.reason,
+                retryable=exc.retryable,
+            )
         except CoreError as exc:
-            return {"status": "failed", "message": exc.message, "code": exc.code, "receipts": receipts}
-    return {"status": "submitted", "receipts": receipts}
+            return _submission("failed", rows, batch_list, sent, message=exc.message, code=exc.code)
+        proposals = batch["proposals"]
+        for receipt in receipts:
+            index = int(receipt["index"])
+            row: dict[str, Any] = {
+                "batch": number,
+                "index": index,
+                "source_key": proposals[index]["source_key"] if 0 <= index < len(proposals) else "",
+                "kind": proposals[index]["kind"] if 0 <= index < len(proposals) else "",
+                "outcome": receipt["outcome"],
+            }
+            if receipt.get("reason"):
+                row["reason"] = receipt["reason"]
+            rows.append(row)
+        sent += 1
+    return _submission("submitted", rows, batch_list, sent)
+
+
+def _submission(
+    status: str, rows: list[dict[str, Any]], batch_list: list[dict[str, Any]], sent: int, **extra: Any
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"status": status, **{k: v for k, v in extra.items() if v is not None}}
+    if status == "host_unsupported":
+        out["message"] = (
+            out.get("message", "propose is not available") + "; proposals are returned in this report instead"
+        )
+    elif status != "submitted":
+        out["unsubmitted_batches"] = len(batch_list) - sent
+    out["receipts"] = rows
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["outcome"]] = counts.get(row["outcome"], 0) + 1
+    out["summary"] = counts
+    return out

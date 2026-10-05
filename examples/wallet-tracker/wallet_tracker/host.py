@@ -6,9 +6,12 @@ The core never imports the SDK and never touches a socket. It needs exactly:
   ``network:fetch`` origin allowlist (``Host.fetch`` in production is
   ``hellohq_plugin_sdk.host.fetch``);
 * ``propose`` - the propose-only write (``propose:holdings`` /
-  ``propose:valuations``). This is DESIGNED (the host-side design is internal and unpublished) but NOT
-  BUILT in the host or SDK, so the production adapter raises
-  ``HostUnsupported`` and tests use a recording fake.
+  ``propose:valuations``): one ``hellohq.proposal-batch@1`` batch in, one
+  ``{"index", "outcome", "reason"?}`` receipt per proposal out. The production
+  adapter (``SdkHost``) is ``hellohq_plugin_sdk.host.propose``; it raises
+  ``HostUnsupported`` when the host does not answer ``propose`` (graceful
+  fallback: the proposals stay in the report) and ``ProposeRefused`` when the
+  host refuses the call. Tests use a recording fake.
 
 ``Clock`` is injected so rate-limit and backoff logic is testable with a fake
 clock and never really sleeps in tests.

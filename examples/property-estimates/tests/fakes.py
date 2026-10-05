@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from property_estimates.errors import PendingHostSupport
 from property_estimates.hostapi import FetchRequest, FetchResponse, Receipt
 
 NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
@@ -23,6 +24,8 @@ class FakeHost:
         self.requests: list[FetchRequest] = []
         self.proposed: list[Sequence[Mapping[str, Any]]] = []
         self.propose_supported = False
+        # Scripts the host's answer to ``propose``: a receipt list, or an exception to raise.
+        self.propose_script: list[Any] = []
         self._now = NOW
         self.slept = 0.0
 
@@ -33,8 +36,13 @@ class FakeHost:
 
     def propose(self, proposals: Sequence[Mapping[str, Any]]) -> list[Receipt]:
         if not self.propose_supported:
-            raise NotImplementedError
+            raise PendingHostSupport("the host does not support propose")
         self.proposed.append(proposals)
+        if self.propose_script:
+            step = self.propose_script.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return step
         return [Receipt(index=i, outcome="queued") for i, _ in enumerate(proposals)]
 
     def now(self) -> datetime:

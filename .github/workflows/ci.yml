@@ -17,6 +17,7 @@ concurrency:
 #
 #  Wave 1 (all parallel):
 #    python        [ubuntu, macos, windows] × [3.11, 3.12]
+#    examples      Python example plugins with a pyproject × [3.11, 3.12] (ubuntu)
 #    rust-test     [ubuntu, macos, windows]
 #    rust-wasm-build  ubuntu only (output is OS-independent; uploads artifact)
 #    js            [ubuntu, macos, windows]
@@ -56,10 +57,27 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # The conformance tests validate what the SDK sends and parses against
+      # plugin-protocol's host-calls.schema.json. They find it through
+      # HELLOHQ_PLUGIN_PROTOCOL_DIR; HELLOHQ_REQUIRE_PROTOCOL makes a missing
+      # checkout a failure instead of a skip.
+      - name: Check out plugin-protocol (schemas for the conformance tests)
+        uses: actions/checkout@v7
+        with:
+          repository: HelloHQ/plugin-protocol
+          path: _protocol
+
       - name: Install SDK + dev dependencies
         run: uv sync --group dev
 
+      - name: Lint (ruff)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: uv run ruff check .
+
       - name: Run tests
+        env:
+          HELLOHQ_PLUGIN_PROTOCOL_DIR: ${{ github.workspace }}/_protocol
+          HELLOHQ_REQUIRE_PROTOCOL: '1'
         run: uv run pytest --cov=hellohq_plugin_sdk --cov-report=term-missing
 
   # ── Rust SDK — unit tests (all OS) ─────────────────────────────────────────
@@ -231,6 +249,62 @@ jobs:
         env:
           REPORT_PACK_REQUIRE_BUILD: '1'
         run: uv run --no-project --python 3.11 --with pytest pytest
+
+  # ── Python example plugins (Linux only) ────────────────────────────────────
+  # One matrix entry per examples/* directory that has a pyproject.toml (it is
+  # self-contained: its own dev group, pytest and ruff config; the SDK comes in
+  # through a path source or the tests' sys.path). Pure Python, so one Linux
+  # runner on the oldest and newest supported Python is enough. report-pack has
+  # no pyproject and its own job above. Add a new example directory here.
+  # The manifest and sidecar tests of wallet-tracker and property-estimates
+  # validate against plugin-registry's manifest schema and plugin-protocol's
+  # host-calls schema; the checkouts below make a missing schema a failure
+  # (HELLOHQ_REQUIRE_*) instead of a skip.
+  examples:
+    name: Example ${{ matrix.example }} (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [filings-companion, macro-context, property-estimates, wallet-tracker]
+        python-version: ['3.11', '3.12']
+    defaults:
+      run:
+        working-directory: examples/${{ matrix.example }}
+    env:
+      HELLOHQ_PLUGIN_PROTOCOL_DIR: ${{ github.workspace }}/_protocol
+      HELLOHQ_REQUIRE_PROTOCOL: '1'
+      HELLOHQ_PLUGIN_REGISTRY_DIR: ${{ github.workspace }}/_registry
+      HELLOHQ_REQUIRE_REGISTRY: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          repository: HelloHQ/plugin-protocol
+          path: _protocol
+
+      - uses: actions/checkout@v7
+        with:
+          repository: HelloHQ/plugin-registry
+          path: _registry
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          ignore-nothing-to-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Tests
+        run: uv run pytest
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format (ruff format --check)
+        run: uv run ruff format --check .
 
   # ── JS SDK — componentize the example (Linux only) ─────────────────────────
   # jco/componentize-js embeds a JS engine; the built component is

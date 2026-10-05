@@ -67,6 +67,20 @@ TYPE_STORAGE_RESPONSE = "storage_response"
 TYPE_HTTP_REQUEST = "http_request"
 TYPE_HTTP_RESPONSE = "http_response"
 
+# Propose-only write host call (plugin → host, synchronous, Tier 1, Verified
+# only). Requires propose:holdings and/or propose:valuations.
+#
+# Wire format:
+#   {"type":"propose","seq":N,"batch":{"schema":"hellohq.proposal-batch@1",
+#                                      "proposals":[…]}}
+#   → {"type":"propose_response","seq":N,"receipts":[{"index":0,"outcome":"queued"}]}
+#   → {"type":"propose_response","seq":N,"error":"…","error_code":"…"[,"reason":"…"]}
+# error_code is one of permission_denied, bad_request, too_many, too_large,
+# rate_limit_exceeded, quota_exceeded, workspace_unavailable, host_error.
+# See hellohq_plugin_sdk.host.propose and hellohq_plugin_sdk.proposals.
+TYPE_PROPOSE = "propose"
+TYPE_PROPOSE_RESPONSE = "propose_response"
+
 
 class PluginError(Exception):
     """Raise from a dispatch function to return a structured RPC error.
