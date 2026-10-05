@@ -14,6 +14,10 @@ library;
 
 import 'dart:convert';
 
+import 'mock_propose.dart';
+
+export 'mock_propose.dart';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixture data
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,6 +117,56 @@ class MockGate {
       }
       return true;
     });
+  }
+
+  /// Parse grant strings as `hqplugin test --grant` takes them. A plain id is a
+  /// flat grant. A `propose:*` id may carry its required asset-kind scope as
+  /// `propose:holdings=crypto_ticker,home`, which is what the manifest's
+  /// `scope.kinds` is. Any other `=` is part of the id.
+  factory MockGate.parse(Iterable<String> grants) {
+    final granted = <Map<String, dynamic>>[];
+    for (final g in grants) {
+      final eq = g.indexOf('=');
+      if (eq > 0 && g.startsWith('propose:')) {
+        granted.add({
+          'id': g.substring(0, eq),
+          'scope': {
+            'kinds': [
+              for (final k in g.substring(eq + 1).split(','))
+                if (k.trim().isNotEmpty) k.trim(),
+            ],
+          },
+        });
+      } else {
+        granted.add({'id': g});
+      }
+    }
+    return MockGate(granted: granted);
+  }
+
+  /// The asset kinds a propose grant for [perm] allows (`scope.kinds`), or
+  /// null when the plugin holds no usable grant for it. Like the real host, a
+  /// propose grant must carry exactly a non-empty `kinds` list of distinct
+  /// kinds from the closed set; one that does not is not a grant at all (the
+  /// install gate refuses it), so a bare `propose:holdings` is null here.
+  Set<String>? allowedKinds(String perm) {
+    if (_denied.contains(perm)) return null;
+    final union = <String>{};
+    var any = false;
+    for (final g in _granted.where((g) => g['id'] == perm)) {
+      final scope = g['scope'];
+      if (scope is! Map || scope.length != 1) continue;
+      final list = scope['kinds'];
+      if (list is! List || list.isEmpty) continue;
+      final kinds = list.map((e) => '$e').toList();
+      if (kinds.toSet().length != kinds.length ||
+          !kinds.every(mockProposeAssetKinds.contains)) {
+        continue;
+      }
+      any = true;
+      union.addAll(kinds);
+    }
+    return any ? union : null;
   }
 
   /// Allowed portfolio ids for [perm], or null when unrestricted.
@@ -404,6 +458,11 @@ class MockSidecarHost {
   /// Lower-case response header names the real host never returns.
   static const Set<String> strippedResponseHeaders = {'set-cookie', 'set-cookie2'};
 
+  /// Answers `propose` (requires `propose:holdings` and/or
+  /// `propose:valuations`, each with a `scope.kinds`). A MOCK: see
+  /// [MockProposer]. Inspect [MockProposer.queued] after the run.
+  final MockProposer proposer;
+
   /// In-memory key-value store backing `storage_get/set/delete`.
   /// Requires `plugin:storage` in grants.
   /// Pre-seed it before the test or inspect it afterwards.
@@ -415,8 +474,10 @@ class MockSidecarHost {
     this.onAiComplete,
     this.onNetworkFetch,
     Map<String, String>? storage,
-  }) : gate = gate ?? MockGate.allow(granted),
-       storage = storage ?? {};
+    MockProposer? proposer,
+  }) : gate = gate ?? MockGate.parse(granted),
+       storage = storage ?? {},
+       proposer = proposer ?? MockProposer();
 
   /// Process one NDJSON line from the plugin's stdout.
   ///
@@ -448,6 +509,8 @@ class MockSidecarHost {
         return _handleStorageDelete(msg, seq);
       case 'http_request':
         return _handleHttpRequest(msg, seq);
+      case 'propose':
+        return _handlePropose(msg, seq);
       default:
         // Lifecycle messages (ready, result, error, event) need no synchronous reply.
         return null;
@@ -578,6 +641,17 @@ class MockSidecarHost {
       }
     }
     return (body: body == null ? '' : '$body', encoding: encoding);
+  }
+
+  // ── propose ────────────────────────────────────────────────────────────────
+
+  String _handlePropose(Map<String, dynamic> msg, dynamic seq) {
+    final answer = proposer.handle(
+      msg,
+      holdingKinds: gate.allowedKinds('propose:holdings'),
+      valuationKinds: gate.allowedKinds('propose:valuations'),
+    );
+    return jsonEncode({'type': 'propose_response', 'seq': seq, ...answer});
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
