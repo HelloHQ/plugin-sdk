@@ -1,8 +1,8 @@
 """The narrow Host interface this plugin needs, plus request/response value types.
 
-The real adapter (``plugin.py``) maps ``fetch`` onto the SDK's existing ``host.fetch`` and
-leaves ``propose`` unimplemented (the host write API is designed, not built). Tests use an
-in-memory fake.
+The real adapter (``plugin.py``) maps ``fetch`` onto the SDK's ``host.fetch`` and ``propose``
+onto ``host.propose`` (propose-only writes: the person approves each suggestion in the app).
+Tests use an in-memory fake.
 """
 
 from __future__ import annotations
@@ -40,7 +40,11 @@ class Host(Protocol):
         """HTTPS fetch from a manifest-declared origin. No redirects are followed."""
 
     def propose(self, proposals: Sequence[Mapping[str, Any]]) -> list[Receipt]:
-        """Submit propose-only values. PENDING HOST SUPPORT: not implemented by any host."""
+        """Submit propose-only values; one receipt per proposal, in order.
+
+        Raises ``PendingHostSupport`` when the host has no ``propose`` and ``ProposeRefused``
+        when the host refuses the whole call.
+        """
 
     def now(self) -> datetime:
         """Timezone-aware current time (UTC)."""

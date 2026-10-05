@@ -1,8 +1,10 @@
 """Build (never submit on its own) a propose-only valuation from an estimate.
 
 The plugin proposes a value against ITS OWN source key. It never sees item ids and never
-writes anything: the host (when its propose API exists) queues the proposal for the person
-to review. Field names here are provisional and will be aligned to the host contract.
+writes anything: the host queues the proposal for the person to review. ``build_valuation_proposal``
+returns the PREVIEW (the wire fields plus ``confidence``, ``rounding``, ``disclaimer`` and
+``attribution`` for display); ``to_wire`` is what goes to the host, which refuses unknown
+fields. The wire shape is ``hellohq.proposal-batch@1`` (plugin-protocol ``host-calls.schema.json``).
 """
 
 from __future__ import annotations
@@ -16,6 +18,10 @@ from .estimate import LABEL, MIN_SAMPLE_PROPOSE
 from .money import minor_to_str, parse_decimal, round_for_proposal, to_minor
 
 METHOD = "comparable_sales_median"
+#: The fields of a ``valuation`` proposal the host accepts; the rest of the preview is display-only.
+WIRE_FIELDS = ("kind", "source_key", "value", "as_of", "method", "source")
+#: ``source.origin`` must be a host name; a person-provided file names its publisher.
+PERSON_PROVIDED_ORIGIN = {"ie_ppr": "propertypriceregister.ie"}
 _KEY_RE = re.compile(r"^[A-Za-z0-9:._/-]{1,256}$")
 
 
@@ -26,6 +32,11 @@ def default_source_key(region: str, query: Mapping[str, Any]) -> str:
         if k not in ("months", "region") and v not in ("", None) and not isinstance(v, (list, dict))
     ]
     return ":".join(parts)[:256]
+
+
+def to_wire(proposal: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a preview proposal that goes to the host (nothing the host would refuse)."""
+    return {key: proposal[key] for key in WIRE_FIELDS if key in proposal}
 
 
 def build_valuation_proposal(
@@ -50,10 +61,10 @@ def build_valuation_proposal(
         "kind": "valuation",
         "source_key": key,
         "value": {"amount": minor_to_str(proposed), "currency": estimate["currency"]},
-        "as_of": src["fetched_at"][:10],
+        "as_of": f"{src['fetched_at'][:10]}T00:00:00Z",  # RFC 3339 UTC: the day the sales were read
         "method": METHOD,
         "source": {
-            "origin": src["origin"],
+            "origin": PERSON_PROVIDED_ORIGIN.get(region, src["origin"]),
             "reference": (
                 f"median of {sample['n_used']} comparable sales "
                 f"{sample['date_from']}..{sample['date_to']}; query {estimate['query']}"

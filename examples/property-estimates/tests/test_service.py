@@ -20,12 +20,13 @@ from fixtures import (
 
 from property_estimates.errors import (
     OriginNotAllowed,
-    PendingHostSupport,
     ProposalRefused,
+    ProposeRefused,
     ValidationError,
 )
 from property_estimates.estimate import LABEL, MIN_SAMPLE_PROPOSE
-from property_estimates.proposal import build_valuation_proposal, default_source_key
+from property_estimates.hostapi import Receipt
+from property_estimates.proposal import build_valuation_proposal, default_source_key, to_wire
 from property_estimates.service import estimate_property, submit_proposal
 from property_estimates.transport import ALLOWED_ORIGINS, Fetcher, window_start
 
@@ -156,7 +157,7 @@ class TestProposal:
         assert p["value"]["amount"].endswith("00.00") and "item" not in json.dumps(p).lower()
         assert p["source"]["origin"] == "data.gov.sg"
         assert p["source"]["fetched_at"] == "2026-10-04T12:00:00Z"
-        assert p["as_of"] == "2026-10-04"
+        assert p["as_of"] == "2026-10-04T00:00:00Z"
         assert p["confidence"]["level"] == "medium" and "Based on 40" in p["confidence"]["note"]
         assert p["disclaimer"] == LABEL and p["attribution"] and "rounded" in p["rounding"]
         assert "40 comparable sales 2026-08..2026-08" in p["source"]["reference"]
@@ -193,21 +194,136 @@ class TestProposal:
         key = default_source_key("uk_ppd", {"district": "LEEDS", "months": 12, "town": ""})
         assert key == "uk_ppd:district:LEEDS"
 
-    def test_submit_is_blocked_until_host_supports_it(self):
-        r = estimate_property(sg_host(40), SG_REQ)
-        host = FakeHost()
-        with pytest.raises(PendingHostSupport) as ei:
-            submit_proposal(host, r)
-        assert ei.value.code == "pending_host_support" and host.proposed == []
-
-    def test_submit_against_a_host_that_implements_it(self):
+    def test_the_host_gets_only_the_wire_fields(self):
         r = estimate_property(sg_host(40), SG_REQ)
         host = FakeHost()
         host.propose_supported = True
-        receipts = submit_proposal(host, r)
-        assert [x.outcome for x in receipts] == ["queued"]
-        sent = host.proposed[0][0]
+        out = submit_proposal(host, r)
+        assert out == {"status": "submitted", "receipts": [{"index": 0, "outcome": "queued"}]}
+        (sent,) = host.proposed[0]
+        assert set(sent) == {"kind", "source_key", "value", "as_of", "method", "source"}
         assert sent["kind"] == "valuation" and "item_id" not in sent
+        # The preview keeps the display-only fields the host would refuse.
+        preview = build_valuation_proposal(r, region="sg_hdb")
+        assert {"confidence", "rounding", "disclaimer", "attribution"} <= set(preview)
+        assert to_wire(preview) == sent
+
+    @pytest.mark.parametrize(
+        "outcome", ["queued", "duplicate", "superseded_older", "unchanged", "suppressed"]
+    )
+    def test_each_host_outcome_is_reported(self, outcome):
+        r = estimate_property(sg_host(40), SG_REQ)
+        host = FakeHost()
+        host.propose_supported = True
+        host.propose_script = [[Receipt(index=0, outcome=outcome)]]
+        assert submit_proposal(host, r) == {
+            "status": "submitted",
+            "receipts": [{"index": 0, "outcome": outcome}],
+        }
+
+    def test_an_invalid_receipt_carries_the_host_reason(self):
+        r = estimate_property(sg_host(40), SG_REQ)
+        host = FakeHost()
+        host.propose_supported = True
+        host.propose_script = [[Receipt(index=0, outcome="invalid", reason="bad_as_of")]]
+        out = submit_proposal(host, r)
+        assert out["receipts"] == [{"index": 0, "outcome": "invalid", "reason": "bad_as_of"}]
+
+    def test_a_host_without_propose_is_the_graceful_fallback(self):
+        r = estimate_property(sg_host(40), SG_REQ)
+        host = FakeHost()  # propose_supported False: raises PendingHostSupport
+        out = submit_proposal(host, r)
+        assert out["status"] == "pending_host_support" and out["code"] == "pending_host_support"
+        assert out["receipts"] == [] and host.proposed == []
+
+    @pytest.mark.parametrize(
+        "code,status,retryable",
+        [
+            ("permission_denied", "permission_denied", False),
+            ("rate_limit_exceeded", "failed", True),
+            ("quota_exceeded", "failed", True),
+            ("too_large", "failed", False),
+            ("workspace_unavailable", "failed", True),
+            ("host_error", "failed", False),
+        ],
+    )
+    def test_host_refusals_are_reported_not_raised(self, code, status, retryable):
+        r = estimate_property(sg_host(40), SG_REQ)
+        host = FakeHost()
+        host.propose_supported = True
+        host.propose_script = [ProposeRefused("refused", code=code, retryable=retryable)]
+        out = submit_proposal(host, r)
+        assert (out["status"], out["code"], out["retryable"]) == (status, code, retryable)
+        assert out["receipts"] == []
+
+    def test_a_bad_request_reason_is_kept(self):
+        r = estimate_property(sg_host(40), SG_REQ)
+        host = FakeHost()
+        host.propose_supported = True
+        host.propose_script = [ProposeRefused("bad", code="bad_request", reason="bad_schema")]
+        assert submit_proposal(host, r)["reason"] == "bad_schema"
+
+    def test_the_minimum_sample_rule_still_applies_before_anything_is_sent(self):
+        r = estimate_property(sg_host(MIN_SAMPLE_PROPOSE - 1), SG_REQ)
+        host = FakeHost()
+        host.propose_supported = True
+        with pytest.raises(ProposalRefused):
+            submit_proposal(host, r)
+        assert host.proposed == []
+
+    @pytest.mark.parametrize("region", ["sg_hdb", "uk_ppd", "fr_dvf", "ie_ppr"])
+    def test_every_region_builds_a_proposal_the_hosts_field_rules_accept(self, region):
+        """The SDK's mirror of the HOST's validator (as_of form, allowed fields, origin as a host
+        name, reference text) against what each region's estimate proposes."""
+        from hellohq_plugin_sdk.proposal_validation import validate_batch
+
+        estimate = _estimate_for(region)
+        wire = to_wire(build_valuation_proposal(estimate, region=region))
+        issues = validate_batch(
+            {"schema": "hellohq.proposal-batch@1", "proposals": [wire]},
+            now=NOW,
+            run_start=NOW,
+            granted={"propose:valuations"},
+        )
+        assert issues == [], (region, issues, wire)
+
+
+def _estimate_for(region):
+    """A real, proposable (>= 30 sales) estimate for ``region``, run through the core."""
+    if region == "sg_hdb":
+        return estimate_property(sg_host(40), SG_REQ)
+    if region == "uk_ppd":
+        text = "\n".join(uk_csv_row(300_000 + i * 1000) for i in range(40))
+        return estimate_property(
+            FakeHost(), {"region": "uk_ppd", "district": "testdistrict", "csv_text": text}
+        )
+    if region == "fr_dvf":
+        rows = [
+            dvf_row(f"m{i}", "2026-03-01", str(300_000 + i * 1000), "Appartement", "50")
+            for i in range(40)
+        ]
+        csv_text = DVF_HEADER + "\n" + "\n".join(rows)
+        storage = (
+            "https://geo-dvf.s3.sbg.io.cloud.ovh.net:443/latest/csv/2025/communes/75/75101.csv"
+        )
+
+        def route(url):
+            if url.startswith("https://files.data.gouv.fr"):
+                return ok("", 302, {"Location": storage})
+            return ok(csv_text)
+
+        return estimate_property(
+            FakeHost(route),
+            {"region": "fr_dvf", "commune": "75101", "property_type": "apartment", "years": [2025]},
+        )
+    text = (
+        IE_HEADER
+        + "\n"
+        + "\n".join(
+            ie_row(f"{1 + i % 28:02d}/06/2026", f"€{400_000 + i * 1000:,}.00") for i in range(40)
+        )
+    )
+    return estimate_property(FakeHost(), {"region": "ie_ppr", "county": "Dublin", "csv_text": text})
 
 
 class TestManifestAndOrigins:

@@ -6,12 +6,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .errors import PendingHostSupport, ValidationError
+from .errors import PendingHostSupport, ProposeRefused, ValidationError
 from .estimate import summarize
 from .fr_dvf import FR_ATTRIBUTION, FR_CURRENCY, fr_collect, fr_validate_params
 from .hostapi import Host
 from .ie_ppr import IE_ATTRIBUTION, IE_CURRENCY, ie_validate_params, parse_ppr_csv
-from .proposal import build_valuation_proposal
+from .proposal import build_valuation_proposal, to_wire
 from .sg_hdb import SG_ATTRIBUTION, SG_CURRENCY, sg_collect, sg_validate_params
 from .transport import FR_ORIGIN, SG_ORIGIN, UK_ORIGIN, Fetcher, window_start
 from .uk_ppd import UK_CURRENCY, parse_ppd_csv, uk_attribution, uk_collect, uk_validate_params
@@ -96,12 +96,46 @@ def estimate_property(host: Host, request: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def submit_proposal(host: Host, estimate: Mapping[str, Any]) -> list[Any]:
-    """Hand a proposal to the host. Raises PendingHostSupport until a host implements it."""
+def submit_proposal(host: Host, estimate: Mapping[str, Any]) -> dict[str, Any]:
+    """Hand the proposal to the host and report what came back. Returns, always as plain data:
+
+    * ``{"status": "submitted", "receipts": [{"index", "outcome", "reason"?}]}`` - one receipt per
+      proposal (``queued``, ``duplicate``, ``superseded_older``, ``unchanged``, ``suppressed``,
+      ``invalid`` + a host reason code);
+    * ``{"status": "pending_host_support", ...}`` - the host has no ``propose`` (it answered
+      ``unknown_method``, or the installed SDK predates it): nothing was sent. The graceful
+      fallback; it needs a host with propose-only writes (hellohq with plugins enabled);
+    * ``{"status": "permission_denied" | "failed", "code", "retryable", ...}`` - the host
+      refused the call (no usable ``propose:valuations`` grant here, rate limit, quota, ...).
+
+    Raises ``ProposalRefused`` when the estimate does not meet the minimum-sample rule (a rule
+    of this plugin, checked before anything is sent).
+    """
     proposal = build_valuation_proposal(estimate, region=str(estimate.get("region", "")))
     try:
-        return host.propose([proposal])
-    except NotImplementedError as exc:
-        raise PendingHostSupport(
-            "the host's propose-only write API is not available yet; nothing was sent"
-        ) from exc
+        receipts = host.propose([to_wire(proposal)])
+    except PendingHostSupport as exc:
+        return {
+            "status": "pending_host_support",
+            "code": exc.code,
+            "message": exc.message,
+            "receipts": [],
+        }
+    except ProposeRefused as exc:
+        out: dict[str, Any] = {
+            "status": "permission_denied" if exc.code == "permission_denied" else "failed",
+            "code": exc.code,
+            "retryable": exc.retryable,
+            "message": exc.message,
+            "receipts": [],
+        }
+        if exc.reason:
+            out["reason"] = exc.reason
+        return out
+    rows = []
+    for receipt in receipts:
+        row: dict[str, Any] = {"index": receipt.index, "outcome": receipt.outcome}
+        if receipt.reason:
+            row["reason"] = receipt.reason
+        rows.append(row)
+    return {"status": "submitted", "receipts": rows}
