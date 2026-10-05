@@ -121,25 +121,94 @@ class _PublishCommand extends Command<int> {
   @override
   final name = 'publish';
   @override
-  final description = 'Open a registry PR for a tagged release.';
+  final description =
+      'Pin a released plugin in the HelloHQ registry and open its PR.';
+
+  @override
+  String get invocation => 'hqplugin publish [--release] [--submit] [options]';
 
   _PublishCommand() {
     argParser
-      ..addOption('version', help: 'Semver to publish (required, e.g. 0.2.0).')
-      ..addOption('wasm',
-          help: 'Path to plugin.wasm to hash.',
-          defaultsTo: 'plugin.wasm')
-      ..addFlag('submit',
-          help: 'Open the PR automatically via the `gh` CLI.',
-          negatable: false);
+      ..addOption(
+        'version',
+        help: 'Version to publish (X.Y.Z). Default: manifest.json\'s version.',
+      )
+      ..addOption(
+        'bump',
+        allowed: ['patch', 'minor', 'major'],
+        help: 'Bump manifest.json\'s version. Excludes --version.',
+      )
+      ..addFlag(
+        'release',
+        negatable: false,
+        help:
+            'Create a GitHub Release on the plugin repo from the local '
+            'files, then pin what the release serves. Without it, the '
+            'files manifest.json\'s wasm_url / ui_bundle_url serve are '
+            'pinned.',
+      )
+      ..addOption(
+        'repo',
+        help:
+            '--release: the plugin repo (owner/name). Default: inferred '
+            'from `git remote get-url origin`.',
+      )
+      ..addOption('tag', help: '--release: release tag. Default: v<version>.')
+      ..addOption(
+        'wasm',
+        help:
+            '--release: plugin file to upload. Default: ./plugin.wasm '
+            '(./plugin.py for a sidecar).',
+      )
+      ..addOption(
+        'ui-bundle',
+        help:
+            '--release: UI bundle to upload. Default: ./ui.zip when '
+            'ui_type is webview.',
+      )
+      ..addFlag(
+        'allow-dirty',
+        negatable: false,
+        help: '--release: allow uncommitted changes in the plugin repo.',
+      )
+      ..addFlag(
+        'submit',
+        negatable: false,
+        help:
+            'Create the release (with --release) and open or update the '
+            'registry PR through `gh`. Without it nothing is changed.',
+      )
+      ..addFlag(
+        'dry-run',
+        negatable: false,
+        help:
+            'Only print the plan (overrides --submit). Downloads and '
+            'hashes the artifacts; no release, fork, push or PR.',
+      )
+      ..addFlag(
+        'first-party',
+        negatable: false,
+        help:
+            'HelloHQ maintainers only (checked against the HelloHQ org): '
+            'allow provenance core and keep manifest.json\'s trust_tier.',
+      );
   }
 
   @override
   Future<int> run() async {
+    final a = argResults!;
     return runPublish(
-      version: argResults?['version'] as String?,
-      wasmPath: argResults?['wasm'] as String?,
-      submit: argResults?['submit'] as bool? ?? false,
+      version: a['version'] as String?,
+      bump: a['bump'] as String?,
+      release: a['release'] as bool,
+      repo: a['repo'] as String?,
+      tag: a['tag'] as String?,
+      wasmPath: a['wasm'] as String?,
+      uiBundlePath: a['ui-bundle'] as String?,
+      allowDirty: a['allow-dirty'] as bool,
+      submit: a['submit'] as bool,
+      dryRun: a['dry-run'] as bool,
+      firstParty: a['first-party'] as bool,
     );
   }
 }

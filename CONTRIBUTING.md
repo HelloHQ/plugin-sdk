@@ -59,9 +59,20 @@ from the tagged source. Nothing is built or uploaded from a laptop.
    provenance attestation for each asset, and notes listing each asset's
    SHA-256 and size, the toolchain versions and the source commit. It is never
    marked as the repository's latest release.
-4. Put the released `plugin.wasm` hash (and `ui_bundle_hash_sha256` for a WebView
-   plugin) into the plugin's manifest in
-   [HelloHQ/plugin-registry](https://github.com/HelloHQ/plugin-registry). The
+4. Pin the release in
+   [HelloHQ/plugin-registry](https://github.com/HelloHQ/plugin-registry) from
+   `examples/<dir>`:
+
+   ```sh
+   dart run ../../cli/bin/hqplugin.dart publish --first-party           # plan
+   dart run ../../cli/bin/hqplugin.dart publish --first-party --submit  # PR
+   ```
+
+   `hqplugin publish` downloads the released files from the manifest's URLs and
+   pins their SHA-256 (and `ui_bundle_hash_sha256` for a WebView plugin) in the
+   registry's copy of the manifest. Do not pass `--release`: the release
+   workflow made the release. `--first-party` is needed because the examples
+   are `provenance: core`; it is checked against HelloHQ org membership. The
    copy in this repo keeps the all-zero placeholder hash.
 
 Releases are immutable because registry manifests pin their hashes: the
