@@ -1,0 +1,7 @@
+# Pinned so a release build is reproducible: the registry pins the SHA-256 of
+# the released plugin.wasm, and anyone rebuilding this tag with this toolchain
+# gets the same bytes. Bump deliberately, in its own PR.
+[toolchain]
+channel = "1.99.0"
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

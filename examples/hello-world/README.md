@@ -94,3 +94,9 @@ and `SHA256SUMS`, each with a build provenance attestation.
 hash of the released `plugin.wasm` only exists after the release build. The
 registry's copy of the manifest carries the released hash (copy it from the
 release notes or `SHA256SUMS`).
+
+The Rust toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml)
+(1.99.0), so a release is reproducible: rebuilding the tag with `./build.sh`
+on Linux or macOS gives the same `plugin.wasm` bytes, and so the same SHA-256
+the registry pins. Bump the pin deliberately, in its own PR; a new pin means a
+new hash.
