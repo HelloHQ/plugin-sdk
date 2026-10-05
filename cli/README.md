@@ -172,8 +172,18 @@ already has is a no-op.
 
 ### `--submit`
 
-Needs `gh` (logged in) and `node`. Publish forks the registry if needed,
-clones the fork, and on branch `publish/<id>/<version>` (from upstream `main`)
+Needs `gh` (logged in) and `node`. Publish first asks GitHub whether you can
+push to `HelloHQ/plugin-registry` (`gh api repos/HelloHQ/plugin-registry --jq
+.permissions.push`) and says which path it takes:
+
+- **Push access** (registry maintainers): it clones the registry itself and
+  pushes the branch there; the PR's head is `publish/<id>/<version>` in the
+  registry. No personal fork is created.
+- **No push access**, or the check fails: it uses your fork
+  `<login>/plugin-registry` (created on first use); the PR's head is
+  `<login>:publish/<id>/<version>`.
+
+In the clone, on branch `publish/<id>/<version>` (from upstream `main`), it
 writes `plugins/<id>/manifest.json` (2-space JSON). It then runs the registry's
 own scripts from the clone:
 
@@ -183,7 +193,9 @@ own scripts from the clone:
   warning, since CI runs it; any other failure stops before the push).
 
 The branch is force-pushed, so re-running the same version updates the open
-PR instead of opening another. The PR is titled `Add plugin: <id> <version>`
+PR (found by its head, in either path) instead of opening another. Publish only
+ever pushes a branch named exactly `publish/<id>/<version>`, with an explicit
+`refs/heads/` refspec; anything else (such as `main`) is refused with exit 70. The PR is titled `Add plugin: <id> <version>`
 or `Update plugin: <id> <old> → <new>`; its body lists the pinned hashes and
 their URLs, the permission changes on an update, and a note when the plugin
 declares Verified-only capabilities (the registry team assigns the tier).
@@ -197,7 +209,8 @@ open. For a release that does not exist yet, the plan shows the local file's
 hash; the real pin comes from the download after the release is created.
 
 Exit codes: 64 usage, 65 invalid data, 66 missing input, 69 tool or service
-unavailable, 77 not permitted (`--first-party` for a non-member).
+unavailable, 70 internal refusal (a push of a non-`publish/` branch), 77 not
+permitted (`--first-party` for a non-member).
 
 `test/publish_network_test.dart` dry-runs against the real released
 hello-world; it runs only with `HQPLUGIN_NETWORK_TESTS=1`.

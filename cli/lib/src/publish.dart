@@ -42,6 +42,28 @@ const String kRegistryRepo = 'HelloHQ/plugin-registry';
 const String kFirstPartyOrg = 'HelloHQ';
 
 const String _registryGitUrl = 'https://github.com/$kRegistryRepo.git';
+
+/// The owner of [kRegistryRepo]; the head owner of a PR pushed there directly.
+final String _registryOwner = kRegistryRepo.split('/').first;
+
+/// A plugin id as the registry schema allows it (manifest.schema.json `id`).
+final RegExp kPluginIdPattern = RegExp(
+  r'^[a-z][a-z0-9]*(\.[a-z0-9][a-z0-9-]*)+$',
+);
+
+/// Whether [branch] is a branch publish may (force-)push: exactly
+/// `publish/<plugin id>/<semver>`. Every push goes through this check, so
+/// publish can never force-push `main` or any other branch, even with push
+/// access to the registry itself.
+bool isPublishBranch(String branch) {
+  final parts = branch.split('/');
+  return parts.length == 3 &&
+      parts[0] == 'publish' &&
+      kPluginIdPattern.hasMatch(parts[1]) &&
+      Semver.tryParse(parts[2]) != null &&
+      !branch.contains('..');
+}
+
 const String _registryRawBase =
     'https://raw.githubusercontent.com/$kRegistryRepo/main';
 
@@ -58,8 +80,9 @@ const int _releaseDownloadAttempts = 5;
 /// updated).
 ///
 /// Exit codes follow sysexits: 64 usage, 65 bad data, 66 missing input,
-/// 69 a required tool or service unavailable, 77 not permitted; a failing
-/// external command returns its own exit code.
+/// 69 a required tool or service unavailable, 70 an internal refusal (a push
+/// of a branch that is not `publish/<id>/<version>`), 77 not permitted; a
+/// failing external command returns its own exit code.
 Future<int> runPublish({
   String? version,
   String? bump,
@@ -350,6 +373,13 @@ class _Publisher {
       throw const _Exit(
         65,
         'publish: manifest.json is missing the "id" field.',
+      );
+    }
+    if (!kPluginIdPattern.hasMatch(rawId) || rawId.length > 128) {
+      throw _Exit(
+        65,
+        'publish: manifest.json id "$rawId" is not a registry plugin id '
+        '(reverse-domain, lowercase: e.g. com.example.my-plugin).',
       );
     }
     id = rawId;
@@ -1089,8 +1119,28 @@ class _Publisher {
 
   // ── --submit: the registry PR ────────────────────────────────────────────
 
-  Future<int> _submitToRegistry() async {
-    final login = await _ghLogin();
+  /// Whether the gh user can push to [kRegistryRepo] itself (a maintainer).
+  /// Any failure to tell counts as no: the fork path then applies.
+  Future<bool> _canPushToRegistry() async {
+    final r = await run('gh', [
+      'api',
+      'repos/$kRegistryRepo',
+      '--jq',
+      '.permissions.push',
+    ]);
+    if (r.exitCode != 0) {
+      e.writeln(
+        'publish: warning — could not read your permissions on '
+        '$kRegistryRepo; using the fork path.',
+      );
+      return false;
+    }
+    return '${r.stdout}'.trim() == 'true';
+  }
+
+  /// Ensures `<login>/plugin-registry` is a fork of the registry (creating it
+  /// when missing) and returns its name.
+  Future<String> _ensureFork(String login) async {
     final forkRepo = '$login/plugin-registry';
     final forkView = await run('gh', [
       'repo',
@@ -1115,20 +1165,47 @@ class _Publisher {
         'publish: failed to create the plugin-registry fork.',
       );
     }
+    return forkRepo;
+  }
+
+  Future<int> _submitToRegistry() async {
+    final login = await _ghLogin();
+    // A maintainer pushes the branch to the registry itself, so publishing
+    // never creates a personal fork as a side effect; everyone else uses
+    // their fork (created on first use).
+    final direct = await _canPushToRegistry();
+    final String pushRepo;
+    final String headOwner;
+    if (direct) {
+      pushRepo = kRegistryRepo;
+      headOwner = _registryOwner;
+      o.writeln(
+        'publish: $login can push to $kRegistryRepo: pushing $branch there '
+        'directly (no fork).',
+      );
+    } else {
+      pushRepo = await _ensureFork(login);
+      headOwner = login;
+      o.writeln(
+        'publish: $login cannot push to $kRegistryRepo: using the fork '
+        '$pushRepo.',
+      );
+    }
 
     final tmp = await Directory.systemTemp.createTemp('hqplugin-registry-');
     try {
       final clone = p.join(tmp.path, 'registry');
-      o.writeln('publish: cloning $forkRepo ...');
+      o.writeln('publish: cloning $pushRepo ...');
       _check(
-        await run('gh', ['repo', 'clone', forkRepo, clone]),
-        'publish: failed to clone the plugin-registry fork.',
+        await run('gh', ['repo', 'clone', pushRepo, clone]),
+        'publish: failed to clone $pushRepo.',
       );
 
       Future<ProcessResult> git(List<String> args) =>
           run('git', args, workingDirectory: clone);
 
-      // `gh repo clone` of a fork usually adds `upstream` itself.
+      // `gh repo clone` of a fork usually adds `upstream` itself. (In the
+      // direct path `upstream` is the same repo as `origin`.)
       if ((await git([
             'remote',
             'add',
@@ -1217,12 +1294,9 @@ class _Publisher {
         await git(['commit', '-m', _prTitle]),
         'publish: git commit failed.',
       );
-      _check(
-        await git(['push', '--force', '-u', 'origin', branch]),
-        'publish: failed to push $branch to $forkRepo.',
-      );
+      await _pushPublishBranch(git, pushRepo);
 
-      final existing = await _openPrFor(login);
+      final existing = await _openPrFor(headOwner);
       if (existing != null) {
         o
           ..writeln(
@@ -1238,7 +1312,7 @@ class _Publisher {
         '--repo',
         kRegistryRepo,
         '--head',
-        '$login:$branch',
+        direct ? branch : '$login:$branch',
         '--base',
         'main',
         '--title',
@@ -1286,7 +1360,35 @@ class _Publisher {
     );
   }
 
-  Future<String?> _openPrFor(String login) async {
+  /// Force-pushes [branch] (and only it) to `origin` ([pushRepo]): a re-run
+  /// of the same version updates the open PR. Refuses any branch that is not
+  /// `publish/<id>/<version>`, so `main` can never be force-pushed.
+  Future<void> _pushPublishBranch(
+    Future<ProcessResult> Function(List<String>) git,
+    String pushRepo,
+  ) async {
+    if (!isPublishBranch(branch)) {
+      throw _Exit(
+        70,
+        'publish: refusing to push "$branch": publish only pushes '
+        'publish/<id>/<version> branches.',
+      );
+    }
+    _check(
+      await git([
+        'push',
+        '--force',
+        '-u',
+        'origin',
+        '$branch:refs/heads/$branch',
+      ]),
+      'publish: failed to push $branch to $pushRepo.',
+    );
+  }
+
+  /// The open registry PR whose head is [branch] in [headOwner]'s repo (the
+  /// registry's own owner for a direct push, the user for a fork), if any.
+  Future<String?> _openPrFor(String headOwner) async {
     final r = await run('gh', [
       'pr',
       'list',
@@ -1303,7 +1405,7 @@ class _Publisher {
     try {
       for (final pr in jsonDecode('${r.stdout}') as List) {
         final owner = ((pr as Map)['headRepositoryOwner'] as Map?)?['login'];
-        if (owner == login) return pr['url'] as String?;
+        if (owner == headOwner) return pr['url'] as String?;
       }
     } on FormatException {
       return null;
