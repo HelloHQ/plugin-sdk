@@ -1,0 +1,34 @@
+# HelloHQ "Hello World" reference plugin (com.hellohq.hello-world).
+#
+# Built for wasm32-unknown-unknown, then turned into a component with
+# `wasm-tools component new` (see build.sh). The empty [workspace] table makes
+# this its own workspace root so it never joins a parent crate's build.
+#
+# Cargo.lock is committed (unlike the other examples) so the released
+# plugin.wasm is built from pinned dependencies; build.sh passes --locked.
+[workspace]
+
+[package]
+name = "hello-world"
+version = "1.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+# cdylib: the core wasm module that `wasm-tools component new` wraps into a
+# component. `cargo test` still builds the unit-test harness on the host.
+crate-type = ["cdylib"]
+
+[dependencies]
+hellohq-plugin-sdk = { path = "../../sdks/rust" }
+
+[dev-dependencies]
+# Host-only: the unit tests parse the UI document to check it is valid JSON.
+# Never linked into the wasm32 component.
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

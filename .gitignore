@@ -4,6 +4,8 @@
 # nested example crates (e.g. examples/component-quickstart/inference/)
 **/target/
 Cargo.lock
+# Released plugins pin their dependencies (build.sh uses --locked).
+!/examples/hello-world/Cargo.lock
 
 # Python
 __pycache__/

@@ -1,0 +1,182 @@
+name: Release example plugin
+
+# Tag-triggered release of ONE example plugin, built here from the tagged
+# source (never from a laptop). Tag format: <example-dir>-v<semver>, e.g.
+# `hello-world-v1.0.0` releases examples/hello-world. See CONTRIBUTING.md
+# "Releasing an example plugin".
+#
+#   build    (contents: read)  validate the tag + manifest, build with the CI
+#                              toolchain, stage assets + SHA256SUMS + notes
+#   release  (contents: write, id-token: write, attestations: write)
+#                              verify the staged hashes, refuse if a release
+#                              for the tag already exists, attest provenance
+#                              for every asset, `gh release create`
+#
+# The build runs the example's own build.sh (and, for a WebView example, npm),
+# so it gets no write token and no OIDC token; only the release job holds them,
+# and it runs nothing from the repository. No build cache is restored: a cache
+# written by a pull-request run must never feed a released binary.
+#
+# Registry manifests pin the released hashes, so a release is immutable: this
+# workflow never uploads to, edits or replaces an existing release. A fix ships
+# as a new version and tag.
+
+on:
+  push:
+    tags: ['*-v*']
+
+permissions: {}
+
+concurrency:
+  group: release-plugin-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ github.ref_name }}
+    if: github.repository == 'HelloHQ/plugin-sdk'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      dir: ${{ steps.check.outputs.dir }}
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Tag format, examples/<dir>/{build.sh,manifest.json}, manifest.version ==
+      # tag version, and every release URL in the manifest pointing at exactly
+      # this repo + tag. Outputs dir/version/prerelease/needs_node/assets.
+      - name: Validate tag and manifest
+        id: check
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/release_plugin_check.py check --tag "$TAG" --github-output "$GITHUB_OUTPUT"
+
+      # Same toolchain setup as ci.yml's rust-wasm-build job.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # Same pinned wasm-tools as ci.yml, plus a checksum check of the tarball
+      # (sha256 from the upstream release's asset digest).
+      - name: Install wasm-tools 1.252.0 (Component Model toolchain)
+        env:
+          WASM_TOOLS_VERSION: 1.252.0
+          WASM_TOOLS_SHA256: 097b1181d5b2bc3f2ebc44b4e72edf18308902023f1f1483a1a7dc1268ea988d
+        run: |
+          set -euo pipefail
+          tarball="wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz"
+          curl -fsSL -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/${tarball}"
+          echo "${WASM_TOOLS_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+
+      # WebView examples bundle ui/ with npm (build.sh produces ui.zip).
+      - uses: actions/setup-node@v7
+        if: steps.check.outputs.needs_node == 'true'
+        with:
+          node-version: '20'
+
+      - name: Build (examples/<dir>/build.sh)
+        env:
+          DIR: ${{ steps.check.outputs.dir }}
+        run: |
+          set -euo pipefail
+          cd "examples/${DIR}"
+          ./build.sh
+
+      - name: Stage assets, SHA256SUMS and release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NEEDS_NODE: ${{ steps.check.outputs.needs_node }}
+        run: |
+          set -euo pipefail
+          tools=(
+            --tool "rustc=$(rustc --version)"
+            --tool "cargo=$(cargo --version)"
+            --tool "wasm-tools=$(wasm-tools --version)"
+          )
+          if [ "${NEEDS_NODE}" = "true" ]; then
+            tools+=(--tool "node=$(node --version)")
+          fi
+          python3 scripts/release_plugin_check.py stage \
+            --tag "$TAG" \
+            --out "${RUNNER_TEMP}/release/assets" \
+            --notes "${RUNNER_TEMP}/release/notes.md" \
+            --commit "$GITHUB_SHA" \
+            --run-url "$RUN_URL" \
+            "${tools[@]}"
+          cat "${RUNNER_TEMP}/release/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release ${{ github.ref_name }}
+    needs: build
+    if: github.repository == 'HelloHQ/plugin-sdk'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release
+
+      - name: Verify staged checksums
+        working-directory: ${{ runner.temp }}/release/assets
+        run: sha256sum --strict -c SHA256SUMS
+
+      # Immutability: registry manifests pin these hashes. Drafts count too (a
+      # half-finished earlier run leaves one); delete it by hand only if it was
+      # never published.
+      - name: Refuse to touch an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tags=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[].tag_name')
+          if grep -Fxq -- "$TAG" <<<"$tags"; then
+            echo "::error::A release for ${TAG} already exists. Released assets are immutable; ship a new version instead."
+            exit 1
+          fi
+
+      - name: Attest build provenance (every asset)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ runner.temp }}/release/assets/*
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          DIR: ${{ needs.build.outputs.dir }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=(
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --latest=false
+            --title "${DIR} v${VERSION}"
+            --notes-file "${RUNNER_TEMP}/release/notes.md"
+          )
+          if [ "${PRERELEASE}" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}" "${RUNNER_TEMP}"/release/assets/*

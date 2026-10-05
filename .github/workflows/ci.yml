@@ -19,15 +19,16 @@ concurrency:
 #    python        [ubuntu, macos, windows] × [3.11, 3.12]
 #    examples      Python example plugins with a pyproject × [3.11, 3.12] (ubuntu)
 #    rust-test     [ubuntu, macos, windows]
-#    rust-wasm-build  ubuntu only (output is OS-independent; uploads artifact)
+#    rust-wasm-build  ubuntu only (output is OS-independent; uploads artifacts)
 #    js            [ubuntu, macos, windows]
 #    go-test       [ubuntu, macos, windows]
 #    go-wasm-build    ubuntu only
 #    dart          [ubuntu, macos, windows]  ← needs libwasmtime (fetch script)
 #    version-consistency  ubuntu only
+#    release-tooling      ubuntu only (scripts/release_plugin_check.py tests)
 #
 #  Wave 2 (after rust-wasm-build):
-#    e2e           [ubuntu, macos, windows]  ← downloads wasm artifact; needs libwasmtime
+#    e2e           [ubuntu, macos, windows]  ← downloads wasm artifacts; needs libwasmtime
 #
 # The fetch-wasmtime-libs.sh script already handles all three OS variants
 # (macOS arm64/x64, Linux x64/arm64, Windows x64). Windows runners invoke the
@@ -125,6 +126,7 @@ jobs:
             examples/portfolio_overview
             examples/component-quickstart
             examples/component-quickstart/inference
+            examples/hello-world
 
       - name: Install wasm-tools (Component Model toolchain)
         run: |
@@ -174,11 +176,32 @@ jobs:
           echo "$wit" | grep -q 'import hellohq:plugin/inference@0.1.0;' || { echo "missing inference import"; exit 1; }
           if echo "$wit" | grep -qi 'wasi:'; then echo "stray wasi import"; exit 1; fi
 
+      # ── hello-world (com.hellohq.hello-world, the registry's Official
+      #    plugin; released by release-plugin.yml). Unit tests for its UI
+      #    builder on the host, then the same build.sh the release runs, then
+      #    its exact import set: hellohq:plugin/{types,workspace,log} only —
+      #    its manifest grants read:portfolio_names and nothing else.
+      - name: hello-world — unit tests (UI document builder)
+        working-directory: examples/hello-world
+        run: cargo test --locked
+
+      - name: hello-world — build.sh -> plugin.wasm + import set
+        working-directory: examples/hello-world
+        run: |
+          ./build.sh
+          python3 tests/e2e_check.py --wasm plugin.wasm --wit --skip-run
+
       # Upload the reference wasm for the e2e matrix jobs.
       - uses: actions/upload-artifact@v7
         with:
           name: portfolio-overview-wasm
           path: examples/portfolio_overview/target/wasm32-unknown-unknown/release/portfolio_overview.wasm
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hello-world-wasm
+          path: examples/hello-world/plugin.wasm
           retention-days: 1
 
   # ── JS / TypeScript SDK (all OS) ───────────────────────────────────────────
@@ -626,6 +649,19 @@ jobs:
             --grant read:portfolio_names
         shell: bash
 
+      - name: Download hello-world plugin.wasm
+        uses: actions/download-artifact@v8
+        with:
+          name: hello-world-wasm
+          path: _wasm_hello
+
+      # Runs plugin.wasm through `hqplugin test` with fixture workspaces and
+      # asserts the declarative UI: N names -> a table of exactly those names;
+      # zero -> the empty state; no grant -> the "unavailable" empty state.
+      - name: Run hello-world through hqplugin test (Tier-2 Wasm, declarative UI)
+        run: uv run --no-project python examples/hello-world/tests/e2e_check.py --wasm _wasm_hello/plugin.wasm
+        shell: bash
+
       # No explicit SDK install needed: the hqplugin CLI auto-discovers
       # sdks/python by walking up from the plugin file and injects it into
       # PYTHONPATH before spawning the sidecar process (see _locatePythonSdk in
@@ -650,6 +686,20 @@ jobs:
           dart run cli/bin/hqplugin.dart test \
             --sidecar examples/report-pack
         shell: bash
+
+  # ── Release tooling (Linux only) ───────────────────────────────────────────
+  # scripts/release_plugin_check.py validates the tag + manifest and stages the
+  # assets for .github/workflows/release-plugin.yml. Its tests cover good and
+  # bad tags, version mismatch, URLs pointing at another tag/repo, missing
+  # assets, and the real examples/hello-world manifest.
+  release-tooling:
+    name: Release tooling (release_plugin_check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
   # ── Protocol version consistency (pure text; Linux only) ───────────────────
   version-consistency:
