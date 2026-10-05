@@ -1,0 +1,7 @@
+{
+  "portfolios": [
+    {"id": "ptf_personal", "name": "Personal"},
+    {"id": "ptf_business", "name": "Business \"Main\" \\ Ops"},
+    {"id": "ptf_retire", "name": "Retirement <2050>"}
+  ]
+}
