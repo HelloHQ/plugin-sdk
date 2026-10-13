@@ -1,10 +1,11 @@
 name: SDK CI
 
 on:
-  push:
-    branches: [main]
-  # CI-PAUSE 2026-10-13: pull_request:
+  workflow_dispatch:  # CI-PAUSE 2026-10-13: no trigger left
+  # CI-PAUSE 2026-10-13: push:
   # CI-PAUSE 2026-10-13:   branches: [main]
+  # CI-PAUSE 2026-10-13: # CI-PAUSE 2026-10-13: pull_request:
+  # CI-PAUSE 2026-10-13: # CI-PAUSE 2026-10-13:   branches: [main]
 
 # Cancel an in-progress run for the same ref so a quick follow-up push doesn't
 # queue behind a stale build.
