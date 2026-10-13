@@ -3,8 +3,8 @@ name: SDK CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # CI-PAUSE 2026-10-13: pull_request:
+  # CI-PAUSE 2026-10-13:   branches: [main]
 
 # Cancel an in-progress run for the same ref so a quick follow-up push doesn't
 # queue behind a stale build.
