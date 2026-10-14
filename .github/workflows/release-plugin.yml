@@ -22,9 +22,8 @@ name: Release example plugin
 # as a new version and tag.
 
 on:
-  workflow_dispatch:  # CI-PAUSE 2026-10-13: no trigger left
-  # CI-PAUSE 2026-10-13: push:
-  # CI-PAUSE 2026-10-13:   tags: ['*-v*']
+  push:
+    tags: ['*-v*']
 
 permissions: {}
 
