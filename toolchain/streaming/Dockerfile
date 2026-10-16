@@ -24,11 +24,18 @@ ARG MIRROR_BASE
 ARG CJS_REV=b4e73cb32380da31940ad7f3854538394af37208
 ARG WASI_SDK=wasi-sdk-30.0-arm64-linux       # set x86_64-linux for amd64 builders
 ENV DEBIAN_FRONTEND=noninteractive
+# LLVM 19 from apt.llvm.org's signed repository — NOT by piping the apt.llvm.org
+# setup script to a shell, which runs an unpinned script fetched from the
+# network (doc 24 SA4). apt verifies the repo signing key and every package
+# signature, and the toolchain version is pinned in the source line.
 RUN apt-get update -qq && apt-get install -y -qq \
       python3 build-essential clang lld cmake pkg-config curl xz-utils \
       ca-certificates git m4 wget gnupg lsb-release software-properties-common \
- && wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh \
- && /tmp/llvm.sh 19 >/dev/null && apt-get install -y -qq libclang-19-dev
+ && wget -qO /etc/apt/trusted.gpg.d/llvm-19.asc https://apt.llvm.org/llvm-snapshot.gpg.key \
+ && echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" \
+      > /etc/apt/sources.list.d/llvm-19.list \
+ && apt-get update -qq && apt-get install -y -qq clang-19 lld-19 libclang-19-dev \
+ && rm -rf /var/lib/apt/lists/*
 ENV LIBCLANG_PATH=/usr/lib/llvm-19/lib
 RUN rustup target add wasm32-wasip2
 # Fetch componentize-js git deps from the HelloHQ mirror, not upstream.
