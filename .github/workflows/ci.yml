@@ -560,9 +560,41 @@ jobs:
         run: dart pub get
         working-directory: cli
 
+      # Author-held signing (cli/test/author_signing*_test.dart) is checked
+      # against the registry's own scripts and statement vectors, so the job
+      # needs a plugin-registry checkout and node (the registry scripts have no
+      # npm dependencies). HELLOHQ_REQUIRE_REGISTRY makes a missing checkout a
+      # failure instead of a skip.
+      - uses: actions/checkout@v7
+        with:
+          repository: HelloHQ/plugin-registry
+          path: _registry
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      # ML-DSA-65 needs OpenSSL 3.5+. Homebrew's openssl@3 has it; the Linux
+      # and Windows runners' OpenSSL is older, so their ML-DSA tests skip (the
+      # Ed25519, statement, fake-openssl and publish tests still run there).
+      # HQPLUGIN_REQUIRE_OPENSSL_PQ turns a missing ML-DSA on macOS into a
+      # failure instead of a skip.
+      - name: OpenSSL 3.5+ for the ML-DSA tests (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          bin="$(brew --prefix openssl@3)/bin/openssl"
+          "$bin" version
+          echo "HQPLUGIN_OPENSSL=$bin" >> "$GITHUB_ENV"
+          echo "HQPLUGIN_REQUIRE_OPENSSL_PQ=1" >> "$GITHUB_ENV"
+
       - name: dart test — cli
         run: dart test
         working-directory: cli
+        env:
+          HELLOHQ_PLUGIN_REGISTRY_DIR: ${{ github.workspace }}/_registry
+          HELLOHQ_REQUIRE_REGISTRY: '1'
 
   # ── E2E: run portfolio_overview.wasm through hqplugin CLI (all OS) ─────────
   # Downloads the pre-built wasm artifact from rust-wasm-build (Linux) so we

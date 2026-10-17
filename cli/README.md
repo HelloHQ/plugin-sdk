@@ -18,6 +18,10 @@ dart run bin/hqplugin.dart test --wasm plugin.wasm --grant read:portfolio_names
 
 # Publish: pin the released files in the plugin registry (plan only).
 dart run bin/hqplugin.dart publish --dry-run
+
+# Author keys: create the hybrid key pair, then sign what you publish.
+dart run bin/hqplugin.dart keys generate --out ~/.hqplugin/keys
+dart run bin/hqplugin.dart publish --sign-key ~/.hqplugin/keys --submit
 ```
 
 ## `test`
@@ -164,7 +168,8 @@ already has is a no-op.
 ### The registry copy of the manifest
 
 - `signatures` are always removed; the registry's signing pipeline signs after
-  merge.
+  merge. (An author who holds a key adds `author-signatures.json` beside the
+  manifest instead: see [Author signatures](#author-signatures).)
 - `trust_tier` and `publisher_signing_key_id` are set by the registry team: on
   an update they are copied from the registry's current manifest, for a new
   plugin they are removed.
@@ -173,6 +178,8 @@ already has is a no-op.
 - `--first-party` (HelloHQ maintainers; checked with
   `gh api orgs/HelloHQ/members/<login>`) allows `core` and keeps the
   manifest's `trust_tier`. Registry CI and review remain the real gate.
+  First-party plugins are signed by the HelloHQ signer, so `--first-party`
+  cannot be combined with `--sign-key` (exit 64).
 
 ### `--submit`
 
@@ -212,9 +219,94 @@ registry manifest against the registry's `main`, and prints the PR it would
 open. For a release that does not exist yet, the plan shows the local file's
 hash; the real pin comes from the download after the release is created.
 
-Exit codes: 64 usage, 65 invalid data, 66 missing input, 69 tool or service
-unavailable, 70 internal refusal (a push of a non-`publish/` branch), 77 not
-permitted (`--first-party` for a non-member).
+Exit codes: 64 usage, 65 invalid data (including a signing key the registry has
+not enrolled), 66 missing input (including a missing key directory), 69 tool or
+service unavailable (including OpenSSL older than 3.5 and a registry without
+author signatures), 70 internal refusal (a push of a non-`publish/` branch, or
+signatures that do not verify before the push), 77 not permitted
+(`--first-party` for a non-member).
+
+### Author signatures
+
+An author who holds a hybrid key (Ed25519 + ML-DSA-65) signs the artifact
+itself, so the registry can show the plugin as Verified under the author's
+enrolled key. Two steps, both once per author:
+
+1. **Create the keys.**
+
+   ```bash
+   hqplugin keys generate --out ~/.hqplugin/keys
+   ```
+
+   This writes `ed25519.pem` and `ml-dsa-65.pem` (private; mode 600 on POSIX,
+   and it never overwrites an existing key) and `public-keys.json`, the two raw
+   public keys, and prints only the public keys and the file paths. On Windows
+   the files inherit the folder's access list; the command prints an `icacls`
+   line to restrict it.
+2. **Enroll the public keys.** Enrollment is a reviewed PR to the registry
+   (`authors/<slug>.json`: your identity, `public_keys` from `public-keys.json`,
+   the `id_prefixes` you may sign, and a proof that you hold the Ed25519 key).
+   The steps are in the registry's
+   [`authors/README.md`](https://github.com/HelloHQ/plugin-registry/blob/main/authors/README.md).
+
+Then publish with the key directory (`--sign-key <dir>` or
+`$HQPLUGIN_AUTHOR_KEY_DIR`):
+
+```bash
+hqplugin publish --sign-key ~/.hqplugin/keys            # plan, shows the statement
+hqplugin publish --sign-key ~/.hqplugin/keys --submit   # opens the PR
+```
+
+The PR then also contains `plugins/<id>/author-signatures.json` (an earlier one
+is replaced, not merged). Publish signs the *artifact statement*
+(`hellohq-plugin-artifact/v1`: id, version, trust tier, execution mode and the
+two hashes), not the plugin file, and before pushing it:
+
+- verifies both signatures with the public half of your keys;
+- runs the registry's own `scripts/author-signatures.mjs check` on a scratch
+  copy of the registry clone, and stops (exit 65) if your key is not an enrolled
+  author key whose `id_prefixes` cover the plugin id.
+
+**The trust tier.** The statement includes `trust_tier`, and the registry team
+sets `trust_tier: verified` when it merges, not the submitter. So publish signs
+the statement of the manifest *as it will be*: the registry manifest with
+`trust_tier` forced to `verified`. The manifest in the PR itself keeps
+`trust_tier` unset (as for every non-first-party publish, and the PR body says
+so), which means the registry's check accepts the signatures only once the tier
+is `verified`; the registry's own check on the PR as opened reports that, and
+this is expected. If a registry maintainer sets any other tier, the signatures
+no longer match and you publish again.
+
+**OpenSSL.** Both algorithms run through the `openssl` command line, so the CLI
+adds no crypto library. ML-DSA-65 needs **OpenSSL 3.5 or newer**; Ed25519 only
+needs 3.0. `keys generate` and `--sign-key` check with a throwaway ML-DSA key
+and exit 69, naming the version they found, when it is missing or too old. Use
+`--openssl <path>` or `$HQPLUGIN_OPENSSL` for a specific binary; otherwise
+`openssl` on PATH is used. On macOS, Homebrew's `openssl@3` is keg-only, so
+`--openssl "$(brew --prefix openssl@3)/bin/openssl"`. The system `openssl` on
+macOS is LibreSSL and cannot do ML-DSA. The `openssl` that ships with Git for
+Windows may be older than 3.5: check `openssl version`. The keys are the
+ordinary PEM files openssl writes, so `node scripts/author-signatures.mjs sign
+--ed25519-key ed25519.pem --mldsa-key ml-dsa-65.pem` in the registry and this
+CLI sign interchangeably.
+
+**Custody.** The private keys never leave your machine: they are only paths
+handed to `openssl`, and the CLI never reads, prints, logs or uploads them (the
+PR carries signatures and public keys only). Back both `.pem` files up offline.
+They cannot be recovered; losing them means enrolling new keys. If a key
+leaks, ask the registry to revoke your enrollment (`"revoked": true` in
+`authors/<slug>.json`); apps then stop trusting your certificate on their next
+catalog refresh.
+
+The tests for this are `test/author_signing_test.dart` (statement vectors from
+the registry, the signer against a fake and a real openssl) and
+`test/author_signing_interop_test.dart`, which checks the CLI's signatures with
+the registry's scripts and, when `$HQPLUGIN_MLDSA_VERIFY_LIB` points at a built
+[mldsa-verify](https://github.com/HelloHQ/mldsa-verify), with the app's
+ML-DSA-65 verifier. They use `$HELLOHQ_PLUGIN_REGISTRY_DIR` (a plugin-registry
+checkout; `HELLOHQ_REQUIRE_REGISTRY=1` fails instead of skipping) and
+`$HQPLUGIN_OPENSSL`; the ML-DSA ones skip without OpenSSL 3.5+ unless
+`HQPLUGIN_REQUIRE_OPENSSL_PQ=1`.
 
 `test/publish_network_test.dart` dry-runs against the real released
 hello-world; it runs only with `HQPLUGIN_NETWORK_TESTS=1`.

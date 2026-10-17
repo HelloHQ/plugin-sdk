@@ -5,9 +5,12 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:hqplugin/src/author_signing.dart';
 import 'package:hqplugin/src/publish.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+
+import 'support/author_test_support.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -18,6 +21,8 @@ const _authorRepo = 'octocat/summary-plugin';
 const _headSha = '0123456789abcdef0123456789abcdef01234567';
 const _rawUpstream =
     'https://raw.githubusercontent.com/HelloHQ/plugin-registry/main/plugins/$_id/manifest.json';
+const _rawAuthorScript =
+    'https://raw.githubusercontent.com/HelloHQ/plugin-registry/main/scripts/author-signatures.mjs';
 const _servedWasmUrl =
     'https://github.com/$_authorRepo/releases/download/v1.0.0/plugin.wasm';
 final _placeholder = '0' * 64;
@@ -113,6 +118,22 @@ class FakeWorld {
   /// prints ('true' for a maintainer), or null for the call failing.
   String? registryPush = 'false';
   bool upstreamRemoteExists = false;
+
+  /// Author signing: the fake openssl, whether the registry's main and the
+  /// clone have scripts/author-signatures.mjs, an author-signatures.json
+  /// already in the clone, and what the registry's check answers.
+  final openssl = FakeOpenSsl();
+  bool registrySupportsAuthorSigs = true;
+  bool cloneHasAuthorScript = true;
+  String? cloneSidecar;
+  ProcessResult authorCheck = _ok('author signatures are sound\n');
+
+  /// Snapshots taken when the registry's author check and `git add` ran.
+  String? authorCheckManifest;
+  String? authorCheckSidecar;
+  String? authorCheckDir;
+  String? sidecarAtAdd;
+  String? manifestAtAdd;
   ProcessResult signatureCheck = _ok();
   ProcessResult verifyArtifacts = _ok('  wasm_url SHA-256 ok\n');
   ProcessResult commitResult = _ok();
@@ -154,6 +175,11 @@ class FakeWorld {
     fetched.add(u);
     final to = redirects[u];
     if (to != null) return HttpHop(302, location: to);
+    if (u == _rawAuthorScript) {
+      return registrySupportsAuthorSigs
+          ? HttpHop(200, body: utf8.encode('// author-signatures\n'))
+          : const HttpHop(404);
+    }
     if (u == _rawUpstream) {
       return upstreamRaw == null
           ? const HttpHop(404)
@@ -178,6 +204,9 @@ class FakeWorld {
         throw ProcessException(exe, args, 'No such file or directory', 2);
       }
       return _ok('$exe version 1\n');
+    }
+    if (exe == 'openssl' || exe.contains('openssl')) {
+      return openssl.call(exe, args);
     }
     if (exe == 'gh') return _gh(args);
     if (exe == 'git') return _git(args, workingDirectory);
@@ -220,6 +249,16 @@ class FakeWorld {
       case ['repo', 'clone', _, final dir]:
         Directory(dir).createSync(recursive: true);
         cloneDir = dir;
+        if (cloneHasAuthorScript) {
+          File(p.join(dir, 'scripts', 'author-signatures.mjs'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync('// author-signatures\n');
+        }
+        if (cloneSidecar != null) {
+          File(p.join(dir, 'plugins', _id, 'author-signatures.json'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync(cloneSidecar!);
+        }
         return _ok();
       case ['pr', 'list', ...]:
         return _ok(prList);
@@ -245,6 +284,15 @@ class FakeWorld {
         return upstreamRaw == null
             ? _fail(128, 'fatal: path does not exist\n')
             : _ok(upstreamRaw!);
+      case ['add', ...]:
+        final side = File(
+          p.join(cwd!, 'plugins', _id, 'author-signatures.json'),
+        );
+        sidecarAtAdd = side.existsSync() ? side.readAsStringSync() : null;
+        manifestAtAdd = File(
+          p.join(cwd, 'plugins', _id, 'manifest.json'),
+        ).readAsStringSync();
+        return _ok();
       case ['commit', ...]:
         return commitResult;
     }
@@ -266,6 +314,15 @@ class FakeWorld {
         return signatureCheck;
       case ['scripts/verify-artifacts.mjs', _]:
         return verifyArtifacts;
+      case ['scripts/author-signatures.mjs', 'check', final dir]:
+        authorCheckDir = dir;
+        authorCheckManifest = File(
+          p.join(dir, 'plugins', _id, 'manifest.json'),
+        ).readAsStringSync();
+        authorCheckSidecar = File(
+          p.join(dir, 'plugins', _id, 'author-signatures.json'),
+        ).readAsStringSync();
+        return authorCheck;
     }
     return _fail(1, 'unexpected node call');
   }
@@ -321,6 +378,9 @@ Future<Result> _publish(
   bool submit = false,
   bool dryRun = false,
   bool firstParty = false,
+  String? signKey,
+  String? opensslPath,
+  Map<String, String> environment = const {},
   int maxArtifactBytes = kMaxArtifactBytes,
 }) async {
   final out = StringBuffer();
@@ -338,6 +398,9 @@ Future<Result> _publish(
     submit: submit,
     dryRun: dryRun,
     firstParty: firstParty,
+    signKeyDir: signKey,
+    opensslPath: opensslPath,
+    environment: environment,
     out_: out,
     err_: err,
     commandRunner: w.run,
@@ -2344,6 +2407,605 @@ This plugin declares Verified-only capabilities (`execution_mode: sidecar`, `ai:
         ),
       );
     });
+  });
+
+  group('author signatures (--sign-key)', () {
+    FakeWorld world() => FakeWorld()..served[_servedWasmUrl] = _wasmA;
+
+    String statementHash(Map<String, dynamic> registryManifest) =>
+        sha256Hex(artifactStatement(verifiedTierView(registryManifest)));
+
+    /// Everything a run printed or ran, to grep for key material.
+    String everything(FakeWorld w, Result r) {
+      final create = w.calls.where((c) => c.line.startsWith('gh pr create'));
+      return [
+        r.out,
+        r.err,
+        ...w.lines,
+        for (final c in create) c.args.join('\n'),
+      ].join('\n');
+    }
+
+    void expectNoKeyMaterial(String text) {
+      expect(text, isNot(contains(kFakeSecretMarker)));
+      expect(text, isNot(contains('PRIVATE KEY')));
+    }
+
+    test(
+      'the plan names the statement it would sign, signing nothing',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world();
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          signKey: keys.path,
+        );
+        expect(r.code, 0, reason: '$r');
+        final m = _plannedManifest(r.out);
+        expect(m.containsKey('trust_tier'), isFalse);
+        final hash = statementHash(m);
+        expect(r.out, contains('── Author signatures ──'));
+        expect(
+          r.out,
+          contains('author signatures: would sign statement $hash'),
+        );
+        expect(r.out, contains('    trust_tier=verified'));
+        expect(r.out, contains('    id=$_id'));
+        expect(
+          r.out,
+          contains('the manifest in the PR leaves trust_tier unset'),
+        );
+        // The PR text explains it too.
+        expect(r.out, contains('### Author signatures'));
+        expect(r.out, contains('statement SHA-256: `$hash`'));
+        expect(r.out, contains('trust_tier=verified'));
+        expect(w.mutatingCalls, isEmpty);
+        // Only the key check ran: openssl, no git/gh/node.
+        expect(w.calls.every((c) => c.exe == 'openssl'), isTrue);
+        expect(
+          w.openssl.calls.where(
+            (c) => c.first == 'pkeyutl' && c.contains('-sign'),
+          ),
+          hasLength(2),
+          reason: 'one probe signature per key, none for the statement',
+        );
+        expectNoKeyMaterial(everything(w, r));
+      },
+    );
+
+    test(
+      'a plan without --sign-key has no signature section and no openssl',
+      () async {
+        final w = world();
+        final r = await _publish(w, _pluginDir(_manifest()));
+        expect(r.code, 0, reason: '$r');
+        expect(r.out, isNot(contains('Author signatures')));
+        expect(w.openssl.calls, isEmpty);
+        expect(w.calls, isEmpty);
+      },
+    );
+
+    test('the statement covers the UI bundle hash', () async {
+      final keys = FakeOpenSsl.keyDir();
+      const uiUrl =
+          'https://github.com/$_authorRepo/releases/download/v1.0.0/ui.zip';
+      final w = world()..served[uiUrl] = _uiZip;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest({'ui_type': 'webview', 'ui_bundle_url': uiUrl})),
+        signKey: keys.path,
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(r.out, contains('    ui_bundle_hash_sha256=${sha256Hex(_uiZip)}'));
+    });
+
+    test('--submit signs, writes and adds author-signatures.json', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world();
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest()),
+        submit: true,
+        signKey: keys.path,
+      );
+      expect(r.code, 0, reason: '$r');
+      final reg = _written(w);
+      // The manifest in the PR leaves the tier to the registry team ...
+      expect(reg.containsKey('trust_tier'), isFalse);
+      expect(w.manifestAtAdd, isNot(contains('trust_tier')));
+      // ... and the signatures are over the Verified-tier statement.
+      final statement = artifactStatement(verifiedTierView(reg));
+      expect(utf8.decode(statement), contains('\ntrust_tier=verified\n'));
+      final sigs = AuthorSignatures.parseSidecar(w.sidecarAtAdd!);
+      final signer = await OpenSslHybridSigner.open(
+        OpenSslTool(run: w.openssl.call),
+        keys.path,
+      );
+      expect(await signer.verify(statement, sigs), isTrue);
+      expect(
+        await signer.verify(artifactStatement(reg), sigs),
+        isFalse,
+        reason: 'not the community-tier statement',
+      );
+      expect(w.sidecarAtAdd, endsWith('}\n'));
+      expect(
+        w.lines,
+        contains(
+          'git add plugins/$_id/manifest.json '
+          'plugins/$_id/author-signatures.json index.json',
+        ),
+      );
+      // The registry's own check ran on a scratch copy with the tier set.
+      final node = w.calls
+          .where((c) => c.exe == 'node' && c.args.first != '--version')
+          .map((c) => c.args.first);
+      expect(node, [
+        'scripts/build-index.mjs',
+        'scripts/check-pr-signatures.mjs',
+        'scripts/verify-artifacts.mjs',
+        'scripts/author-signatures.mjs',
+      ]);
+      final check = w.calls.singleWhere(
+        (c) =>
+            c.args.isNotEmpty &&
+            c.args.first == 'scripts/author-signatures.mjs',
+      );
+      expect(check.args[1], 'check');
+      expect(check.cwd, w.cloneDir);
+      expect(check.args[2], isNot(w.cloneDir));
+      final scratch =
+          jsonDecode(w.authorCheckManifest!) as Map<String, dynamic>;
+      expect(scratch['trust_tier'], 'verified');
+      expect(w.authorCheckSidecar, w.sidecarAtAdd);
+      expect(r.out, contains('author signatures are sound'));
+      expect(r.out, contains('signed statement ${sha256Hex(statement)}'));
+      // Signed after the checks that need the manifest, before the push.
+      final idxAdd = w.lines.toList().indexWhere(
+        (l) => l.startsWith('git add'),
+      );
+      final idxPush = w.lines.toList().indexWhere(
+        (l) => l.startsWith('git push'),
+      );
+      expect(idxAdd, lessThan(idxPush));
+      // The PR body explains the tier subtlety.
+      final create = w.calls.singleWhere(
+        (c) => c.line.startsWith('gh pr create'),
+      );
+      final body = create.args[create.args.indexOf('--body') + 1];
+      expect(body, contains('### Author signatures'));
+      expect(body, contains(sha256Hex(statement)));
+      expect(body, contains('`trust_tier=verified`'));
+      expect(body, contains('leaves `trust_tier` unset'));
+      expectNoKeyMaterial(everything(w, r));
+    });
+
+    test(
+      'an update keeps the registry trust_tier in the PR manifest',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world()
+          ..upstream = _manifest({
+            'version': '0.9.0',
+            'content_hash_sha256': 'c' * 64,
+            'trust_tier': 'verified',
+          });
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 0, reason: '$r');
+        expect(_written(w)['trust_tier'], 'verified');
+        final scratch =
+            jsonDecode(w.authorCheckManifest!) as Map<String, dynamic>;
+        expect(scratch['trust_tier'], 'verified');
+        expect(
+          AuthorSignatures.parseSidecar(w.sidecarAtAdd!).ed25519,
+          hasLength(64),
+        );
+      },
+    );
+
+    test('a previous author-signatures.json is replaced, not merged', () async {
+      final keys = FakeOpenSsl.keyDir();
+      const old =
+          '{"signatures": [{"sig_alg": "ed25519", "signature": "OLD"}]}\n';
+      final w = world()
+        ..upstream = _manifest({
+          'version': '0.9.0',
+          'content_hash_sha256': 'c' * 64,
+        })
+        ..cloneSidecar = old;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest()),
+        submit: true,
+        signKey: keys.path,
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(w.sidecarAtAdd, isNot(contains('OLD')));
+      expect(
+        AuthorSignatures.parseSidecar(w.sidecarAtAdd!).mlDsa65,
+        hasLength(3309),
+      );
+      expect(r.out, contains('replaced plugins/$_id/author-signatures.json'));
+    });
+
+    test(
+      'an unsigned update warns about a stale author-signatures.json',
+      () async {
+        final w = world()
+          ..upstream = _manifest({
+            'version': '0.9.0',
+            'content_hash_sha256': 'c' * 64,
+          })
+          ..cloneSidecar = '{}\n';
+        final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+        expect(r.code, 0, reason: '$r');
+        expect(r.err, contains('has an author-signatures.json'));
+        expect(r.err, contains('--sign-key'));
+        expect(w.openssl.calls, isEmpty);
+      },
+    );
+
+    test('--sign-key with --first-party is refused (exit 64)', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world();
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest()),
+        firstParty: true,
+        signKey: keys.path,
+      );
+      expect(r.code, 64);
+      expect(
+        r.err,
+        contains('--sign-key cannot be combined with --first-party'),
+      );
+      expect(r.err, contains('HelloHQ signer'));
+      expect(w.calls, isEmpty);
+      expect(w.fetched, isEmpty);
+    });
+
+    test(
+      'the key-directory env var is used, but not for --first-party',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final env = {'HQPLUGIN_AUTHOR_KEY_DIR': keys.path};
+        final w = world();
+        final r = await _publish(w, _pluginDir(_manifest()), environment: env);
+        expect(r.code, 0, reason: '$r');
+        expect(r.out, contains('author signatures: would sign statement'));
+
+        final w2 = world();
+        final r2 = await _publish(
+          w2,
+          _pluginDir(_manifest({'provenance': 'core'})),
+          firstParty: true,
+          environment: env,
+        );
+        expect(r2.code, 0, reason: '$r2');
+        expect(r2.out, contains('ignoring \$HQPLUGIN_AUTHOR_KEY_DIR'));
+        expect(r2.out, isNot(contains('Author signatures')));
+        expect(w2.openssl.calls, isEmpty);
+      },
+    );
+
+    test('--openssl, then \$HQPLUGIN_OPENSSL, picks the binary', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world();
+      var r = await _publish(
+        w,
+        _pluginDir(_manifest()),
+        signKey: keys.path,
+        opensslPath: '/opt/ssl35/bin/openssl',
+        environment: {'HQPLUGIN_OPENSSL': '/env/openssl'},
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(w.openssl.exes.toSet(), {'/opt/ssl35/bin/openssl'});
+      final w2 = world();
+      r = await _publish(
+        w2,
+        _pluginDir(_manifest()),
+        signKey: keys.path,
+        environment: {'HQPLUGIN_OPENSSL': '/env/openssl'},
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(w2.openssl.exes.toSet(), {'/env/openssl'});
+    });
+
+    test('a missing key directory is exit 66, before any release', () async {
+      final w = world();
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest(), {'plugin.wasm': _wasmA}),
+        release: true,
+        submit: true,
+        signKey: p.join(Directory.systemTemp.path, 'no-such-hqplugin-keys'),
+      );
+      expect(r.code, 66);
+      expect(r.err, contains('does not exist'));
+      expect(r.err, contains('keys generate'));
+      expect(w.mutatingCalls, isEmpty);
+    });
+
+    test('a missing key file is exit 66 and names it', () async {
+      final keys = FakeOpenSsl.keyDir();
+      File(p.join(keys.path, kEd25519KeyFile)).deleteSync();
+      final r = await _publish(
+        world(),
+        _pluginDir(_manifest()),
+        signKey: keys.path,
+      );
+      expect(r.code, 66);
+      expect(r.err, contains(kEd25519KeyFile));
+    });
+
+    test('no openssl: exit 69 with install help, before any release', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world()..openssl.installed = false;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest(), {'plugin.wasm': _wasmA}),
+        release: true,
+        submit: true,
+        signKey: keys.path,
+      );
+      expect(r.code, 69);
+      expect(r.err, contains('OpenSSL was not found'));
+      expect(r.err, contains('3.5'));
+      expect(w.mutatingCalls, isEmpty);
+    });
+
+    test('an old openssl: exit 69 naming the version it found', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world();
+      w.openssl
+        ..pq = false
+        ..versionLine = 'OpenSSL 3.3.2 3 Sep 2024';
+      final r = await _publish(w, _pluginDir(_manifest()), signKey: keys.path);
+      expect(r.code, 69);
+      expect(r.err, contains('OpenSSL 3.3.2 3 Sep 2024'));
+      expect(r.err, contains('3.5 or newer'));
+    });
+
+    test(
+      'a registry without author signatures is exit 69, nothing released',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world()..registrySupportsAuthorSigs = false;
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest(), {'plugin.wasm': _wasmA}),
+          release: true,
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 69);
+        expect(r.err, contains('does not support author signatures yet'));
+        expect(w.mutatingCalls, isEmpty);
+        expect(w.openssl.calls, isEmpty);
+      },
+    );
+
+    test('a clone without the script is exit 69 before the push', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world()..cloneHasAuthorScript = false;
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest()),
+        submit: true,
+        signKey: keys.path,
+      );
+      expect(r.code, 69);
+      expect(r.err, contains('does not support author signatures yet'));
+      expect(w.saw('git push'), isFalse);
+      expect(w.saw('gh pr create'), isFalse);
+    });
+
+    test(
+      'an unenrolled key is exit 65 with the script text and the enrollment docs',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world()
+          ..authorCheck = ProcessResult(
+            1,
+            1,
+            'plugins/$_id/author-signatures.json: Ed25519 signature must verify '
+                'under exactly one enrolled author whose prefix covers $_id '
+                '(matched 0)\n',
+            '',
+          );
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 65);
+        expect(r.err, contains('(matched 0)'));
+        expect(r.err, contains('authors/README.md'));
+        expect(r.err, contains('public-keys.json'));
+        expect(r.err, contains('nothing was pushed'));
+        expect(w.saw('git push'), isFalse);
+        expect(w.saw('gh pr create'), isFalse);
+        expectNoKeyMaterial(everything(w, r));
+      },
+    );
+
+    test(
+      'another check failure is exit 65 without enrollment advice',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world()
+          ..authorCheck = ProcessResult(
+            1,
+            1,
+            'plugins/$_id/author-signatures.json: not valid JSON\n',
+            '',
+          );
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 65);
+        expect(r.err, contains('not valid JSON'));
+        expect(r.err, isNot(contains('Enroll')));
+        expect(w.saw('git push'), isFalse);
+      },
+    );
+
+    test(
+      'signatures that do not verify locally are exit 70, nothing pushed',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world();
+        // The key probe verifies twice; the self-check of the real statement fails.
+        w.openssl.verifyQueue.addAll([true, true, false]);
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 70);
+        expect(r.err, contains('do not verify'));
+        expect(w.saw('git push'), isFalse);
+        expect(w.saw('git commit'), isFalse);
+        expect(w.saw('node scripts/author-signatures.mjs'), isFalse);
+      },
+    );
+
+    test(
+      'a signing failure after the keys opened maps to its exit code',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world();
+        final real = w.openssl;
+        var signs = 0;
+        Future<ProcessResult> runner(
+          String exe,
+          List<String> args, {
+          String? workingDirectory,
+        }) async {
+          if (exe.contains('openssl') &&
+              args.first == 'pkeyutl' &&
+              args.contains('-sign') &&
+              ++signs > 2) {
+            return ProcessResult(1, 1, '', 'signing blew up');
+          }
+          return w.run(exe, args, workingDirectory: workingDirectory);
+        }
+
+        final out = StringBuffer();
+        final err = StringBuffer();
+        final code = await runPublish(
+          submit: true,
+          signKeyDir: keys.path,
+          environment: const {},
+          out_: out,
+          err_: err,
+          commandRunner: runner,
+          httpGet: w.get,
+          workingDirectory: _pluginDir(_manifest()).path,
+        );
+        expect(real.calls, isNotEmpty);
+        expect(code, 65);
+        expect(err.toString(), contains('signing blew up'));
+        expect(w.saw('git push'), isFalse);
+      },
+    );
+
+    test('an Official plugin cannot be signed with an author key', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world()
+        ..upstream = _manifest({
+          'version': '0.9.0',
+          'content_hash_sha256': 'c' * 64,
+          'trust_tier': 'official',
+        });
+      final r = await _publish(w, _pluginDir(_manifest()), signKey: keys.path);
+      expect(r.code, 65);
+      expect(r.err, contains('Official'));
+    });
+
+    test('re-running a finished publish stays a no-op', () async {
+      final keys = FakeOpenSsl.keyDir();
+      final w = world()
+        ..upstream = _manifest({
+          'content_hash_sha256': sha256Hex(_wasmA),
+          'trust_tier': 'verified',
+        });
+      final r = await _publish(
+        w,
+        _pluginDir(_manifest()),
+        submit: true,
+        signKey: keys.path,
+      );
+      expect(r.code, 0, reason: '$r');
+      expect(r.out, contains('nothing to publish'));
+      expect(r.out, contains('nothing was signed'));
+      expect(w.mutatingCalls, isEmpty);
+    });
+
+    test(
+      're-running an open signed publish force-pushes the same branch',
+      () async {
+        final keys = FakeOpenSsl.keyDir();
+        final w = world()
+          ..prList = jsonEncode([
+            {
+              'url': 'https://github.com/HelloHQ/plugin-registry/pull/7',
+              'headRepositoryOwner': {'login': 'octocat'},
+            },
+          ]);
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 0, reason: '$r');
+        expect(
+          w.lines,
+          contains(
+            'git push --force -u origin '
+            'publish/$_id/1.0.0:refs/heads/publish/$_id/1.0.0',
+          ),
+        );
+        expect(w.saw('gh pr create'), isFalse);
+        expect(r.out, contains('pull/7'));
+      },
+    );
+
+    test(
+      'private key bytes never reach stdout, stderr, the PR or any command',
+      () async {
+        final keys = FakeOpenSsl.keyDir(secret: 'distinct-secret');
+        final w = world();
+        final r = await _publish(
+          w,
+          _pluginDir(_manifest()),
+          submit: true,
+          signKey: keys.path,
+        );
+        expect(r.code, 0, reason: '$r');
+        final text = everything(w, r);
+        expectNoKeyMaterial(text);
+        expect(text, isNot(contains('distinct-secret')));
+        for (final name in [kEd25519KeyFile, kMlDsa65KeyFile]) {
+          for (final line in File(p.join(keys.path, name)).readAsLinesSync()) {
+            if (line.contains(kFakeSecretMarker)) {
+              expect(text, isNot(contains(line)));
+            }
+          }
+        }
+      },
+    );
   });
 
   group('permissionDelta', () {

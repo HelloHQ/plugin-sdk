@@ -381,12 +381,14 @@ String registryPrTitle({
 
 /// The PR body: new vs update, the permission delta (updates), the pinned
 /// hashes with the URLs they were downloaded from, and a note when the plugin
-/// declares Verified-only capabilities.
+/// declares Verified-only capabilities. With [authorStatementSha256] (an
+/// author-signed publish, `--sign-key`) it also explains the signatures file.
 String registryPrBody({
   required Map<String, dynamic> manifest,
   required Map<String, dynamic>? upstream,
   required Map<String, int> artifactSizes,
   bool firstParty = false,
+  String? authorStatementSha256,
 }) {
   final b = StringBuffer();
   final id = manifest['id'];
@@ -484,6 +486,30 @@ String registryPrBody({
         'until `trust_tier` is `verified`.',
       );
     }
+  }
+
+  if (authorStatementSha256 != null) {
+    b
+      ..writeln()
+      ..writeln('### Author signatures')
+      ..writeln()
+      ..writeln(
+        'This PR adds `plugins/$id/author-signatures.json`: Ed25519 and '
+        'ML-DSA-65 signatures by the author\'s enrolled keys over the '
+        'artifact statement (`hellohq-plugin-artifact/v1`).',
+      )
+      ..writeln()
+      ..writeln('- statement SHA-256: `$authorStatementSha256`')
+      ..writeln()
+      ..writeln(
+        'The statement is computed for `trust_tier=verified`, the tier the '
+        'registry team sets when it merges. The manifest in this PR leaves '
+        '`trust_tier` unset, as for every non-first-party publish, so '
+        '`node scripts/author-signatures.mjs check` accepts the signatures '
+        'once `trust_tier` is `verified`, and not before. To re-derive the '
+        'statement, set `trust_tier` to `verified` in a copy of the manifest '
+        'and run `node scripts/artifact-statement.mjs <copy>`.',
+      );
   }
 
   final lic = (manifest['licensing'] as Map?) ?? const {};

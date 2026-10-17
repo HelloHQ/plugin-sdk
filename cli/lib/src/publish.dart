@@ -11,6 +11,21 @@
 // the registry's own scripts (build-index, check-pr-signatures,
 // verify-artifacts), so it passes the same checks registry CI runs.
 //
+// `--sign-key <dir>` (or $HQPLUGIN_AUTHOR_KEY_DIR) is for an author who holds a
+// hybrid key enrolled in the registry (`hqplugin keys generate`, then an
+// authors/<slug>.json PR). Publish then also writes
+// `plugins/<id>/author-signatures.json` beside the manifest: Ed25519 and
+// ML-DSA-65 signatures over the artifact statement (author_signing.dart), made
+// with OpenSSL 3.5+. The statement includes `trust_tier`, and the registry team
+// sets `verified` at merge, so the statement is built from the registry
+// manifest AS IT WILL BE with `trust_tier` forced to `verified`; the manifest in
+// the PR itself keeps `trust_tier` unset. Before anything is pushed both
+// signatures are re-verified with the key's public half, and the registry's own
+// `scripts/author-signatures.mjs check` runs on a scratch copy of the clone
+// whose manifest says `verified`. Private keys are only ever paths passed to
+// openssl; they are never read, printed or put in the PR. `--first-party` is a
+// different path (signed by the HelloHQ signer) and excludes `--sign-key`.
+//
 // Every external command (gh, git, node) goes through one injectable
 // [PublishCommandRunner] and every download through one [PublishHttpGet], so
 // the tests are hermetic.
@@ -20,6 +35,7 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import 'author_signing.dart';
 import 'publish_fetch.dart';
 import 'publish_icon.dart';
 import 'publish_manifest.dart';
@@ -79,10 +95,17 @@ const int _releaseDownloadAttempts = 5;
 /// the GitHub Release first, then the registry PR is opened (or the open one
 /// updated).
 ///
-/// Exit codes follow sysexits: 64 usage, 65 bad data, 66 missing input,
-/// 69 a required tool or service unavailable, 70 an internal refusal (a push
-/// of a branch that is not `publish/<id>/<version>`), 77 not permitted; a
-/// failing external command returns its own exit code.
+/// With [signKeyDir] (default: `$HQPLUGIN_AUTHOR_KEY_DIR` in [environment]) the
+/// PR also carries the author's signatures (see the file header). [opensslPath]
+/// (default: `$HQPLUGIN_OPENSSL`, then `openssl`) names the OpenSSL 3.5+ binary.
+///
+/// Exit codes follow sysexits: 64 usage, 65 bad data (including a signing key
+/// the registry does not know), 66 missing input, 69 a required tool or
+/// service unavailable (including OpenSSL older than 3.5 and a registry that
+/// does not support author signatures yet), 70 an internal refusal (a push of
+/// a branch that is not `publish/<id>/<version>`, a signature that does not
+/// verify), 77 not permitted; a failing external command returns its own exit
+/// code.
 Future<int> runPublish({
   String? version,
   String? bump,
@@ -96,6 +119,9 @@ Future<int> runPublish({
   bool submit = false,
   bool dryRun = false,
   bool firstParty = false,
+  String? signKeyDir,
+  String? opensslPath,
+  Map<String, String>? environment,
   StringSink? out_,
   StringSink? err_,
   PublishCommandRunner commandRunner = _runCommand,
@@ -118,6 +144,9 @@ Future<int> runPublish({
     submit: submit,
     dryRun: dryRun,
     firstParty: firstParty,
+    signKeyDirFlag: signKeyDir,
+    opensslPath: opensslPath,
+    environment: environment ?? Platform.environment,
     o: out_ ?? stdout,
     e: e,
     run: commandRunner,
@@ -197,6 +226,9 @@ class _Publisher {
     required this.submit,
     required this.dryRun,
     required this.firstParty,
+    required this.signKeyDirFlag,
+    required this.opensslPath,
+    required this.environment,
     required this.o,
     required this.e,
     required this.run,
@@ -218,6 +250,9 @@ class _Publisher {
   final bool submit;
   final bool dryRun;
   final bool firstParty;
+  final String? signKeyDirFlag;
+  final String? opensslPath;
+  final Map<String, String> environment;
   final StringSink o;
   final StringSink e;
   final PublishCommandRunner run;
@@ -227,6 +262,24 @@ class _Publisher {
   final Duration retryDelay;
 
   bool get mutate => submit && !dryRun;
+
+  /// The author key directory: `--sign-key`, else `$HQPLUGIN_AUTHOR_KEY_DIR`
+  /// (not for `--first-party`, which HelloHQ signs), made absolute. Null: this
+  /// publish carries no author signatures.
+  String? get signKeyDir {
+    var dir = signKeyDirFlag;
+    if (dir == null || dir.isEmpty) {
+      final fromEnv = environment['HQPLUGIN_AUTHOR_KEY_DIR'];
+      if (firstParty || fromEnv == null || fromEnv.isEmpty) return null;
+      dir = fromEnv;
+    }
+    return p.isAbsolute(dir)
+        ? dir
+        : p.join(workingDirectory ?? Directory.current.path, dir);
+  }
+
+  /// The signer, once [_requireAuthorSigning] opened the keys.
+  HybridSigner? _signer;
 
   late final File manifestFile;
   late final String pluginDir;
@@ -280,6 +333,7 @@ class _Publisher {
     await _readUpstreamFromRegistry();
     _versionPrecheck();
     if (firstParty) await _checkFirstParty();
+    if (signKeyDir != null) await _requireAuthorSigning();
     if (mutate) await _requireSubmitTools();
     if (release) await _prepareRelease();
 
@@ -295,7 +349,15 @@ class _Publisher {
     await _downloadArtifacts();
 
     _composeRegistry();
-    if (_alreadyPublished()) return 0;
+    if (_alreadyPublished()) {
+      if (signKeyDir != null) {
+        o.writeln(
+          'publish: nothing was signed: the registry already has this '
+          'version.',
+        );
+      }
+      return 0;
+    }
     _printPlan();
 
     if (!mutate) {
@@ -313,6 +375,20 @@ class _Publisher {
   // ── Flags, manifest, gates ───────────────────────────────────────────────
 
   void _validateFlags() {
+    if (firstParty && signKeyDirFlag != null && signKeyDirFlag!.isNotEmpty) {
+      throw const _Exit(
+        64,
+        'publish: --sign-key cannot be combined with --first-party: '
+        'first-party plugins are signed by the HelloHQ signer, not by an '
+        'author key. Drop one of the two flags.',
+      );
+    }
+    if (firstParty && (environment['HQPLUGIN_AUTHOR_KEY_DIR'] ?? '') != '') {
+      o.writeln(
+        'publish: ignoring \$HQPLUGIN_AUTHOR_KEY_DIR: --first-party plugins '
+        'are signed by the HelloHQ signer.',
+      );
+    }
     if (version != null && bump != null) {
       throw const _Exit(
         64,
@@ -710,6 +786,166 @@ class _Publisher {
     o.writeln('publish: --first-party: $login is a $kFirstPartyOrg member');
   }
 
+  // ── Author signing ───────────────────────────────────────────────────────
+
+  /// Everything an author-signed publish needs, checked before the first
+  /// mutation so no release is created for a publish that cannot be signed:
+  /// the plugin is not Official, the registry understands author signatures,
+  /// and the keys work (OpenSSL 3.5+, right key types, probe sign + verify).
+  Future<void> _requireAuthorSigning() async {
+    _refuseOfficialUpstream();
+    await _requireRegistrySupport();
+    final tool = OpenSslTool(
+      run: run,
+      executable: resolveOpenSslExecutable(opensslPath, environment),
+    );
+    _signer = await _signing(() => OpenSslHybridSigner.open(tool, signKeyDir!));
+    o.writeln(
+      'publish: author signing with the keys in $signKeyDir '
+      '(${tool.version})',
+    );
+  }
+
+  /// Official plugins are signed by the HelloHQ signer, never by an author key.
+  void _refuseOfficialUpstream() {
+    if (upstream?['trust_tier'] == 'official') {
+      throw _Exit(
+        65,
+        'publish: the registry lists $id as an Official plugin, which the '
+        'HelloHQ signer signs; an author-held key cannot sign it. Drop '
+        '--sign-key.',
+      );
+    }
+  }
+
+  static const String _noAuthorSignatures =
+      'publish: the registry does not support author signatures yet '
+      '(it has no scripts/author-signatures.mjs), so a PR with '
+      'author-signatures.json would be rejected. Nothing was released, '
+      'pushed or opened; publish without --sign-key, or wait until the '
+      'registry supports them.';
+
+  Future<void> _requireRegistrySupport() async {
+    final url = '$_registryRawBase/scripts/author-signatures.mjs';
+    try {
+      await downloadHttps(url, httpGet, maxBytes: 1024 * 1024);
+    } on DownloadException catch (ex) {
+      if (ex.statusCode == 404) throw const _Exit(69, _noAuthorSignatures);
+      e.writeln(
+        'publish: warning — could not check that the registry supports '
+        'author signatures ($ex); the clone is checked again before the push.',
+      );
+    }
+  }
+
+  /// Runs [body], turning a [SignerException] into the matching [_Exit].
+  Future<T> _signing<T>(Future<T> Function() body) async {
+    try {
+      return await body();
+    } on SignerException catch (ex) {
+      throw _Exit(ex.code, 'publish: ${ex.message}');
+    }
+  }
+
+  /// The statement an author signs: the registry manifest as it will be once
+  /// the registry team has set `trust_tier: verified` (the PR itself leaves
+  /// the tier unset).
+  Uint8List get _authorStatement {
+    try {
+      return artifactStatement(verifiedTierView(registry));
+    } on StatementException catch (ex) {
+      throw _Exit(65, 'publish: $ex');
+    }
+  }
+
+  String get _sidecarPath => 'plugins/$id/author-signatures.json';
+
+  /// Signs the statement, writes [sidecar] (replacing any earlier one) and
+  /// re-verifies exactly what was written with the keys' public halves.
+  Future<void> _signIntoClone(File sidecar) async {
+    final signer = _signer!;
+    final statement = _authorStatement;
+    final replaced = sidecar.existsSync();
+    final sigs = await _signing(() => signer.sign(statement));
+    sidecar.writeAsStringSync(sigs.toSidecarJson());
+    final AuthorSignatures written;
+    try {
+      written = AuthorSignatures.parseSidecar(sidecar.readAsStringSync());
+    } on FormatException catch (ex) {
+      throw _Exit(70, 'publish: wrote an unusable $_sidecarPath: $ex');
+    }
+    if (!await _signing(() => signer.verify(statement, written))) {
+      throw _Exit(
+        70,
+        'publish: the author signatures do not verify under the key\'s '
+        'public half; nothing was pushed.',
+      );
+    }
+    o.writeln(
+      'publish: signed statement ${sha256Hex(statement)} '
+      '(ed25519 + ml-dsa-65, verified locally); ${replaced ? 'replaced' : 'wrote'} '
+      '$_sidecarPath',
+    );
+  }
+
+  /// The registry's own `author-signatures.mjs check` on a scratch copy of the
+  /// clone whose manifest says `trust_tier: verified` (the tier the statement
+  /// covers and the registry sets at merge). The PR's real manifest stays
+  /// untouched. Only the plugin being published and the enrolled authors are
+  /// in the copy, so other plugins cannot add noise.
+  Future<void> _registryAuthorCheck(String clone, String tmpPath) async {
+    final scratch = Directory(p.join(tmpPath, 'author-check'));
+    final plugin = Directory(p.join(scratch.path, 'plugins', id))
+      ..createSync(recursive: true);
+    final authors = Directory(p.join(clone, 'authors'));
+    if (authors.existsSync()) {
+      final dest = Directory(p.join(scratch.path, 'authors'))..createSync();
+      for (final f in authors.listSync().whereType<File>()) {
+        if (f.path.endsWith('.json')) {
+          f.copySync(p.join(dest.path, p.basename(f.path)));
+        }
+      }
+    }
+    File(
+      p.join(plugin.path, 'manifest.json'),
+    ).writeAsStringSync(encodeManifest(verifiedTierView(registry)));
+    File(
+      p.join(clone, 'plugins', id, 'author-signatures.json'),
+    ).copySync(p.join(plugin.path, 'author-signatures.json'));
+
+    o.writeln(
+      'publish: node scripts/author-signatures.mjs check (trust_tier '
+      'verified, as the registry sets it)',
+    );
+    final r = await run('node', [
+      'scripts/author-signatures.mjs',
+      'check',
+      scratch.path,
+    ], workingDirectory: clone);
+    final text = '${r.stdout}${r.stderr}'.trim();
+    if (r.exitCode == 0) {
+      for (final line in const LineSplitter().convert(text)) {
+        o.writeln('publish:   $line');
+      }
+      return;
+    }
+    final indented = const LineSplitter()
+        .convert(text)
+        .map((l) => '  $l')
+        .join('\n');
+    final notEnrolled = RegExp(r'matched 0\b').hasMatch(text);
+    throw _Exit(
+      65,
+      'publish: the registry\'s author-signatures check refused the '
+      'signatures; nothing was pushed:\n$indented'
+      '${notEnrolled ? '\n  This signing key is not an enrolled author key '
+                'whose id_prefixes cover $id. Enroll the public keys '
+                '(`hqplugin keys generate` writes public-keys.json) with a '
+                'reviewed PR to the registry\'s authors/; see authors/README.md '
+                'in https://github.com/$kRegistryRepo.' : ''}',
+    );
+  }
+
   Future<void> _requireSubmitTools() async {
     await _requireGh('--submit');
     if (!await _hasExecutable('node')) {
@@ -1096,6 +1332,28 @@ class _Publisher {
         o.writeln(line);
       }
     }
+    if (signKeyDir != null) {
+      final statement = _authorStatement;
+      o
+        ..writeln()
+        ..writeln('── Author signatures ──')
+        ..writeln(
+          'publish: author signatures: ${mutate ? 'will sign' : 'would sign'} '
+          'statement ${sha256Hex(statement)}',
+        )
+        ..writeln(
+          'publish:   ed25519 + ml-dsa-65, written to $_sidecarPath in the '
+          'registry PR',
+        )
+        ..writeln(
+          'publish:   the statement names trust_tier=verified, the tier the '
+          'registry sets at merge; the manifest in the PR leaves trust_tier '
+          'unset',
+        );
+      for (final line in const LineSplitter().convert(utf8.decode(statement))) {
+        o.writeln('    $line');
+      }
+    }
     o
       ..writeln()
       ..writeln('── Registry PR (branch $branch) ──')
@@ -1115,6 +1373,9 @@ class _Publisher {
     upstream: upstream,
     artifactSizes: {for (final a in _artifacts) a.urlKey: a.pinnedBytes.length},
     firstParty: firstParty,
+    authorStatementSha256: signKeyDir == null
+        ? null
+        : sha256Hex(_authorStatement),
   );
 
   // ── --submit: the registry PR ────────────────────────────────────────────
@@ -1240,6 +1501,7 @@ class _Publisher {
           'the registry manifest.',
         );
         _versionPrecheck();
+        if (signKeyDir != null) _refuseOfficialUpstream();
         _composeRegistry();
         if (_alreadyPublished()) return 0;
       }
@@ -1248,10 +1510,28 @@ class _Publisher {
         await git(['checkout', '-B', branch, 'upstream/main']),
         'publish: failed to create branch $branch.',
       );
+      if (signKeyDir != null &&
+          !File(
+            p.join(clone, 'scripts', 'author-signatures.mjs'),
+          ).existsSync()) {
+        throw const _Exit(69, _noAuthorSignatures);
+      }
 
       final dest = File(p.join(clone, 'plugins', id, 'manifest.json'));
       dest.parent.createSync(recursive: true);
       dest.writeAsStringSync(encodeManifest(registry));
+      final sidecar = File(
+        p.join(clone, 'plugins', id, 'author-signatures.json'),
+      );
+      if (signKeyDir != null) {
+        await _signIntoClone(sidecar);
+      } else if (sidecar.existsSync()) {
+        e.writeln(
+          'publish: warning — the registry has an author-signatures.json for '
+          '$id, and this version changes what it signs, so registry CI will '
+          'reject the PR. Publish with --sign-key to sign it again.',
+        );
+      }
       var baseArg = '';
       if (freshRaw != null) {
         final base = File(p.join(tmp.path, 'base-manifest.json'))
@@ -1286,8 +1566,15 @@ class _Publisher {
       ], workingDirectory: clone);
       _handleVerifyArtifacts(verify);
 
+      if (signKeyDir != null) await _registryAuthorCheck(clone, tmp.path);
+
       _check(
-        await git(['add', registryPath, 'index.json']),
+        await git([
+          'add',
+          registryPath,
+          if (signKeyDir != null) _sidecarPath,
+          'index.json',
+        ]),
         'publish: git add failed.',
       );
       _check(

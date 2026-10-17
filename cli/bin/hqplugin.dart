@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:args/command_runner.dart';
 import 'package:hqplugin/src/build.dart';
+import 'package:hqplugin/src/keys_cmd.dart';
 import 'package:hqplugin/src/publish.dart';
 import 'package:hqplugin/src/test_cmd.dart';
 
@@ -12,7 +13,8 @@ Future<void> main(List<String> args) async {
       CommandRunner<int>('hqplugin', 'Build, test, and publish HelloHQ plugins.')
         ..addCommand(_BuildCommand())
         ..addCommand(_TestCommand())
-        ..addCommand(_PublishCommand());
+        ..addCommand(_PublishCommand())
+        ..addCommand(_KeysCommand());
   try {
     exitCode = await runner.run(args) ?? 0;
   } on UsageException catch (e) {
@@ -198,6 +200,22 @@ class _PublishCommand extends Command<int> {
         help:
             'HelloHQ maintainers only (checked against the HelloHQ org): '
             'allow provenance core and keep manifest.json\'s trust_tier.',
+      )
+      ..addOption(
+        'sign-key',
+        valueHelp: 'dir',
+        help:
+            'Sign as an enrolled author: the directory with ed25519.pem and '
+            'ml-dsa-65.pem (`hqplugin keys generate`). Adds '
+            'plugins/<id>/author-signatures.json to the PR; needs OpenSSL '
+            '3.5+. Default: \$HQPLUGIN_AUTHOR_KEY_DIR. Excludes --first-party.',
+      )
+      ..addOption(
+        'openssl',
+        valueHelp: 'path',
+        help:
+            'OpenSSL 3.5+ binary for --sign-key. Default: '
+            '\$HQPLUGIN_OPENSSL, else `openssl` on PATH.',
       );
   }
 
@@ -217,6 +235,54 @@ class _PublishCommand extends Command<int> {
       submit: a['submit'] as bool,
       dryRun: a['dry-run'] as bool,
       firstParty: a['first-party'] as bool,
+      signKeyDir: a['sign-key'] as String?,
+      opensslPath: a['openssl'] as String?,
+    );
+  }
+}
+
+class _KeysCommand extends Command<int> {
+  @override
+  final name = 'keys';
+  @override
+  final description = 'Create the hybrid key pair an author signs plugins with.';
+
+  _KeysCommand() {
+    addSubcommand(_KeysGenerateCommand());
+  }
+}
+
+class _KeysGenerateCommand extends Command<int> {
+  @override
+  final name = 'generate';
+  @override
+  final description =
+      'Write ed25519.pem, ml-dsa-65.pem and public-keys.json to --out.';
+
+  _KeysGenerateCommand() {
+    argParser
+      ..addOption(
+        'out',
+        valueHelp: 'dir',
+        help:
+            'Directory for the keys. Created if missing; never overwrites an '
+            'existing key.',
+      )
+      ..addOption(
+        'openssl',
+        valueHelp: 'path',
+        help:
+            'OpenSSL 3.5+ binary. Default: \$HQPLUGIN_OPENSSL, else `openssl` '
+            'on PATH.',
+      );
+  }
+
+  @override
+  Future<int> run() async {
+    final a = argResults!;
+    return runKeysGenerate(
+      outDir: a['out'] as String?,
+      opensslPath: a['openssl'] as String?,
     );
   }
 }
