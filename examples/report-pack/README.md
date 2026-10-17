@@ -246,8 +246,11 @@ Read these before relying on the report.
    blocker: the WebView pane sent every `compute` to the Wasm executor. The app now
    routes by the installed binary (`plugin_webview_compute.dart`), so a sidecar's
    `compute` runs on the Tier-1 executor with every gate the declarative runner
-   applies. What has not been done is a run of this plugin in a release build of
-   the app; see the readiness review.
+   applies. It was run in a production-flavour macOS build from the live registry
+   on 2026-10-17: install, per-workspace approval, the WebView page, the report in
+   English and Chinese, and the save dialog all worked. Only an empty workspace was
+   seen in the app (the demo workspace could not be loaded; see
+   HelloHQ/hellohq#476), so a report with figures rests on the tests.
 2. **Totals mix assets and liabilities.** See
    [Why some amounts are withheld](#why-some-amounts-are-withheld). Many
    families hold a mortgage, so many reports will show few amounts. Fix in the
