@@ -44,8 +44,22 @@ fetch() {
 
   local asset="wasmtime-${WASMTIME_VERSION}-${infix}-c-api"
   local url="https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${asset}.${ext}"
+  local sums="$ROOT/toolchain/streaming/sha256sums.txt"
   echo "▸ wasmtime: $url"
   curl -fsSL "$url" -o "$WORK/capi.${ext}"
+  local expected got
+  expected=$(awk -v n="${asset}.${ext}" '$2 == n { print $1; exit }' "$sums")
+  if [[ -z "$expected" ]]; then
+    echo "SA4: no sha256 pin for ${asset}.${ext} in $sums" >&2
+    exit 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$WORK/capi.${ext}" | awk '{print $1}')
+  else got=$(shasum -a 256 "$WORK/capi.${ext}" | awk '{print $1}'); fi
+  if [[ "$got" != "$expected" ]]; then
+    echo "SA4: sha256 mismatch for ${asset}.${ext} — expected $expected got $got" >&2
+    exit 1
+  fi
+  echo "  verified ${asset}.${ext}"
 
   if [[ "$ext" == "zip" ]]; then
     if command -v unzip >/dev/null 2>&1; then

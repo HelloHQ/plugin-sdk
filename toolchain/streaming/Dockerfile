@@ -37,14 +37,20 @@ RUN apt-get update -qq && apt-get install -y -qq \
  && apt-get update -qq && apt-get install -y -qq clang-19 lld-19 libclang-19-dev \
  && rm -rf /var/lib/apt/lists/*
 ENV LIBCLANG_PATH=/usr/lib/llvm-19/lib
+COPY sha256sums.txt /tmp/sha256sums.txt
 RUN rustup target add wasm32-wasip2
 # Fetch componentize-js git deps from the HelloHQ mirror, not upstream.
 RUN git config --global url."${MIRROR_BASE}-componentize-js".insteadOf https://github.com/dicej/componentize-js \
  && git config --global url."${MIRROR_BASE}-wasmtime".insteadOf       https://github.com/dicej/wasmtime \
  && git config --global url."${MIRROR_BASE}-wasm-tools".insteadOf     https://github.com/dicej/wasm-tools \
  && git config --global url."${MIRROR_BASE}-mozjs".insteadOf          https://github.com/dicej/mozjs
-RUN curl -sL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/${WASI_SDK}.tar.gz" \
-      | tar xz -C /opt && ln -s "/opt/${WASI_SDK}" /opt/wasi-sdk
+RUN set -eu \
+ && curl -fsSL -o "/tmp/${WASI_SDK}.tar.gz" \
+      "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-30/${WASI_SDK}.tar.gz" \
+ && grep " ${WASI_SDK}.tar.gz$" /tmp/sha256sums.txt | (cd /tmp && sha256sum -c -) \
+ && tar xz -C /opt -f "/tmp/${WASI_SDK}.tar.gz" \
+ && ln -s "/opt/${WASI_SDK}" /opt/wasi-sdk \
+ && rm -f "/tmp/${WASI_SDK}.tar.gz"
 ENV WASI_SDK_PATH=/opt/wasi-sdk
 WORKDIR /src
 RUN git clone "${MIRROR_BASE}-componentize-js" cjs && git -C cjs checkout "${CJS_REV}"
@@ -68,16 +74,26 @@ ARG GO_BOOT=go-linux-arm64-bootstrap          # set go-linux-amd64-bootstrap for
 ARG MIRROR_BASE
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y -qq curl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY sha256sums.txt /tmp/sha256sums.txt
 COPY --from=cjs   /usr/local/bin/componentize-js /usr/local/bin/componentize-js
 COPY --from=tools /usr/local/bin/wit-bindgen     /usr/local/bin/wit-bindgen
 COPY --from=tools /usr/local/bin/wasm-tools       /usr/local/bin/wasm-tools
-# Go fork (wasi-on-idle) from the HelloHQ mirror release.
-RUN curl -sL "${MIRROR_BASE}-go/releases/download/${GO_FORK_TAG}/${GO_BOOT}.tbz" | tar xj -C /opt
+# Go fork (wasi-on-idle) from the HelloHQ mirror release. The pin is the
+# upstream release bytes; a mirror that serves different bytes fails the build.
+RUN set -eu \
+ && curl -fsSL -o "/tmp/${GO_BOOT}.tbz" \
+      "${MIRROR_BASE}-go/releases/download/${GO_FORK_TAG}/${GO_BOOT}.tbz" \
+ && grep " ${GO_BOOT}.tbz$" /tmp/sha256sums.txt | (cd /tmp && sha256sum -c -) \
+ && tar xj -C /opt -f "/tmp/${GO_BOOT}.tbz" \
+ && rm -f "/tmp/${GO_BOOT}.tbz"
 ENV HQ_GO_WASI_ON_IDLE=/opt/${GO_BOOT}/bin/go
 # preview1 reactor adapter.
-RUN mkdir -p /opt/adapter && curl -sL \
+RUN set -eu \
+ && mkdir -p /opt/adapter \
+ && curl -fsSL \
       https://github.com/bytecodealliance/wasmtime/releases/download/v39.0.1/wasi_snapshot_preview1.reactor.wasm \
-      -o /opt/adapter/wasi_snapshot_preview1.reactor.wasm
+      -o /opt/adapter/wasi_snapshot_preview1.reactor.wasm \
+ && grep " wasi_snapshot_preview1.reactor.wasm$" /tmp/sha256sums.txt | (cd /opt/adapter && sha256sum -c -)
 ENV HQ_WASI_ADAPTER=/opt/adapter/wasi_snapshot_preview1.reactor.wasm
 WORKDIR /plugin
 # `hqplugin build --inference --docker` mounts the plugin at /plugin and runs
