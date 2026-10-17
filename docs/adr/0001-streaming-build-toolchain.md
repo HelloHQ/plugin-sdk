@@ -20,8 +20,8 @@ GitHub forks**, which are being upstreamed into the Bytecode Alliance:
 
 | Lang | What's needed (pinned) |
 |---|---|
-| Go | `dicej/go` `go1.25.5-wasi-on-idle` (release binaries) · `bytecodealliance/wit-bindgen`@`e14b18ca` (Go backend, **upstream**) · preview1 reactor adapter (wasmtime `v39.0.1` release) · `wasm-tools` CLI |
-| JS | `dicej/componentize-js`@`b4e73cb3` · `dicej/wasmtime`@`4856b557` · `dicej/wasm-tools`@`54ef27de` + wit-dylib-ffi@`b072b0ca` · `dicej/mozjs`@`e2192ed1` · WASI-SDK 30 · libclang ≥ 19 |
+| Go | `dicej/go` `go1.25.5-wasi-on-idle` (release binaries) · `bytecodealliance/wit-bindgen`@`e14b18cae24765882eb2533f2113290244d641b1` (Go backend, **upstream**) · preview1 reactor adapter (wasmtime `v39.0.1` release) · `wasm-tools` CLI |
+| JS | `dicej/componentize-js`@`b4e73cb32380da31940ad7f3854538394af37208` · `dicej/wasmtime`@`4856b5579b3d159f94c9e7a4ef247cd70eb2b2d2` · `dicej/wasm-tools`@`54ef27de26b2e41f3f0aac54e9258ff7feaf170b` + wit-dylib-ffi@`b072b0caa8307779558d96a62bc9522abda6a7fb` · `dicej/mozjs`@`e2192ed10076154960c7a748c9359014d5d81060` · WASI-SDK 30 · libclang ≥ 19 |
 
 We verified both end-to-end (a Go and a JS plugin drain `inference.complete`'s
 stream on a component-model-async host — see `hellohq/docs/55` §6). The JS path

@@ -30,7 +30,7 @@ OUT="component_quickstart_go_inference.component.wasm"
 TC=".toolchain"
 
 GO_FORK_TAG="go1.25.5-wasi-on-idle"
-WIT_BINDGEN_REV="e14b18ca"
+WIT_BINDGEN_REV="e14b18cae24765882eb2533f2113290244d641b1"
 ADAPTER_VER="v39.0.1"
 
 WASM_TOOLS="$(command -v wasm-tools || echo "$HOME/.cargo/bin/wasm-tools")"

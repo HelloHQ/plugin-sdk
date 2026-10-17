@@ -23,10 +23,10 @@ WORK="${WORK:-$(mktemp -d)}"
 # upstream-url|mirror-repo|pin (commit or tag to guarantee is present)
 INVENTORY=(
   "https://github.com/dicej/componentize-js|plugin-mirror-componentize-js|b4e73cb32380da31940ad7f3854538394af37208"
-  "https://github.com/dicej/wasmtime|plugin-mirror-wasmtime|4856b557"
-  "https://github.com/dicej/wasm-tools|plugin-mirror-wasm-tools|54ef27de"
-  "https://github.com/dicej/mozjs|plugin-mirror-mozjs|e2192ed1"
-  "https://github.com/bytecodealliance/wit-bindgen|plugin-mirror-wit-bindgen|e14b18ca"
+  "https://github.com/dicej/wasmtime|plugin-mirror-wasmtime|4856b5579b3d159f94c9e7a4ef247cd70eb2b2d2"
+  "https://github.com/dicej/wasm-tools|plugin-mirror-wasm-tools|54ef27de26b2e41f3f0aac54e9258ff7feaf170b"
+  "https://github.com/dicej/mozjs|plugin-mirror-mozjs|e2192ed10076154960c7a748c9359014d5d81060"
+  "https://github.com/bytecodealliance/wit-bindgen|plugin-mirror-wit-bindgen|e14b18cae24765882eb2533f2113290244d641b1"
 )
 
 # The Go compiler fork ships per-OS RELEASE BINARIES, so we mirror the release

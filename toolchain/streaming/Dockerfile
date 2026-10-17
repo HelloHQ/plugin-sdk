@@ -62,7 +62,7 @@ RUN cp cjs/target/release/componentize-js /usr/local/bin/componentize-js
 
 # ── Stage 2: Rust tools (wit-bindgen Go backend + wasm-tools) ─────────────────
 FROM rust:bookworm AS tools
-ARG WIT_BINDGEN_REV=e14b18ca
+ARG WIT_BINDGEN_REV=e14b18cae24765882eb2533f2113290244d641b1
 RUN cargo install --locked --no-default-features --features go \
       --git https://github.com/bytecodealliance/wit-bindgen --rev "${WIT_BINDGEN_REV}" --root /usr/local \
  && cargo install --locked wasm-tools --version 1.243.0 --root /usr/local

@@ -23,7 +23,7 @@ demand into `./.toolchain` (gitignored) by `build.sh`:
 
 | Piece | What it provides |
 |---|---|
-| `bytecodealliance/wit-bindgen` Go backend (rev `e14b18ca`, `--features go`) | A readable `StreamReader[string]` (`Read` / `WriterDropped` / `Drop`) + goroutine-based concurrency on the Component Model concurrency ABI |
+| `bytecodealliance/wit-bindgen` Go backend (rev `e14b18cae24765882eb2533f2113290244d641b1`, `--features go`) | A readable `StreamReader[string]` (`Read` / `WriterDropped` / `Drop`) + goroutine-based concurrency on the Component Model concurrency ABI |
 | `dicej/go` `go1.25.5-wasi-on-idle` fork | A blocking goroutine yields to the async executor (via a `runtime.wasiOnIdle` patch) instead of dead-locking |
 | `wasi_snapshot_preview1.reactor` adapter (wasmtime `v39.0.1`) | Wraps the `GOOS=wasip1` core module into a Component Model component |
 
