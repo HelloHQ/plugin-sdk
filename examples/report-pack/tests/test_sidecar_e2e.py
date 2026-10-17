@@ -1,4 +1,9 @@
-"""End-to-end: run ``plugin.py`` as the real sidecar process.
+"""End-to-end: run the BUNDLED ``plugin.py`` as the real sidecar process.
+
+The shipped artifact is the single file ``bundle.py`` builds, and the app runs it
+as ``python -I`` with nothing installed (no ``PYTHONPATH``, no SDK). So this
+builds that file into a scratch directory and spawns it exactly that way: a stray
+``hellohq_plugin_sdk`` import, or any non-standard-library one, fails here.
 
 The host side is played by this test using the exact wire format the app and
 ``hqplugin test --sidecar`` speak (see ``hellohq_plugin_sdk.sidecar.serve``):
@@ -15,28 +20,48 @@ payload shapes of ``PluginDataAccessObject`` (see ``fixtures.py``).
 
 from __future__ import annotations
 
+import atexit
+import functools
 import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 import fixtures as fx
 import pytest
-from conftest import EXAMPLE_DIR, SDK_DIR
 from hellohq_plugin_sdk import serve
 
-import plugin
+import bundle
+import report_pack as plugin
 
-PLUGIN = EXAMPLE_DIR / "plugin.py"
+
+@functools.cache
+def _bundled_plugin() -> Path:
+    """The shipped single-file sidecar, built once into a scratch directory."""
+    scratch = Path(tempfile.mkdtemp(prefix="report-pack-"))
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)
+    out = scratch / "plugin.py"
+    out.write_text(bundle.build(), encoding="utf-8", newline="\n")
+    return out
 
 
 def run_sidecar(context, input_, *, calls: int = 1) -> list[dict]:
     """Spawn the sidecar, send ``calls`` identical RPCs, return the replies."""
-    env = {**os.environ, "PYTHONPATH": str(SDK_DIR), "PYTHONUNBUFFERED": "1"}
+    plugin_file = _bundled_plugin()
+    # What the app passes: isolated mode, an allowlisted environment, a scratch cwd.
+    env = {
+        k: os.environ[k]
+        for k in ("PATH", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP")
+        if k in os.environ
+    }
     proc = subprocess.Popen(
-        [sys.executable, str(PLUGIN)],
+        [sys.executable, "-I", str(plugin_file)],
+        cwd=plugin_file.parent,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

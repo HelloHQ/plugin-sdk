@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Build the Report Pack example.
 #
-# Compute half: the Tier-1 sidecar is the Python script `plugin.py` itself —
-# no compile step. The host runs it via uv / python3 (network-jailed). The
-# manifest's `wasm_url` points at `plugin.py` (the sidecar artifact), so the
-# sidecar must stay a single self-contained file (it imports only the stdlib
-# and hellohq_plugin_sdk).
+# Compute half: the Tier-1 sidecar is ONE file, `plugin.py`, built by bundle.py
+# from the SDK's sidecar loop (protocol.py + sidecar.py) and report_pack.py. The
+# host runs that single file with `python -I` and nothing installed (the Python
+# SDK is not on PyPI), so it must import only the standard library. The
+# manifest's `wasm_url` points at it. The output is a pure function of the
+# source files, so two builds give identical bytes.
 #
 # UI half: the framework-agnostic WebView bundle (vanilla TS) -> ui/dist ->
 # ui.zip. The UI depends on the in-repo @hellohq/plugin-sdk (file: link), whose
@@ -29,8 +30,12 @@ sha256() {
   fi
 }
 
-echo ">> [compute] sidecar = plugin.py (no build step)"
-python3 -c 'import ast, sys; ast.parse(open("plugin.py", encoding="utf-8").read(), "plugin.py")'
+PY="${PYTHON:-python3}"
+echo ">> [compute] bundle.py -> plugin.py  ($("${PY}" --version 2>&1))"
+"${PY}" bundle.py plugin.py
+pyc_dir="$(mktemp -d)"
+trap 'rm -rf "${pyc_dir}"' EXIT
+PYTHONPYCACHEPREFIX="${pyc_dir}" "${PY}" -m py_compile plugin.py
 echo "   plugin.py  $(sha256 plugin.py)"
 
 echo ">> [ui] build the in-repo @hellohq/plugin-sdk (dist/ is not committed)"

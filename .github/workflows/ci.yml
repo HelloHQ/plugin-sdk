@@ -257,8 +257,8 @@ jobs:
 
       - name: Lint (ruff)
         run: |
-          uvx ruff@0.16.8 check plugin.py tests
-          uvx ruff@0.16.8 format --check plugin.py tests
+          uvx ruff@0.16.8 check report_pack.py bundle.py tests
+          uvx ruff@0.16.8 format --check report_pack.py bundle.py tests
 
       - name: Build plugin.py + UI bundle (ui.zip)
         run: ./build.sh
@@ -266,7 +266,7 @@ jobs:
       - name: Tests (Python 3.12, with coverage; requires the built bundle)
         env:
           REPORT_PACK_REQUIRE_BUILD: '1'
-        run: uv run --no-project --python 3.12 --with pytest --with pytest-cov pytest --cov=plugin --cov-report=term-missing
+        run: uv run --no-project --python 3.12 --with pytest --with pytest-cov pytest --cov=report_pack --cov-report=term-missing
 
       - name: Tests (Python 3.11)
         env:
@@ -712,13 +712,17 @@ jobs:
         shell: bash
 
       # The CLI's mock sidecar host does not build the context snapshot yet, so
-      # this proves the report-pack sidecar starts, answers and exits cleanly
-      # on every OS (the no-portfolios report); real context is covered by
+      # this proves the shipped report-pack sidecar (the single file bundle.py
+      # builds, with the SDK loop inside, so it runs with nothing installed)
+      # starts, answers and exits cleanly on every OS (the no-portfolios
+      # report); real context is covered by
       # examples/report-pack/tests/test_sidecar_e2e.py.
       - name: Run report-pack through hqplugin test (Tier-1 sidecar)
         run: |
+          PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+          "$PY" examples/report-pack/bundle.py examples/report-pack/plugin.py
           dart run cli/bin/hqplugin.dart test \
-            --sidecar examples/report-pack
+            --sidecar examples/report-pack/plugin.py
         shell: bash
 
       # The shipped single-file artifact (build.sh bundles the SDK loop in, so

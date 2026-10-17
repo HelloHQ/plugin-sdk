@@ -1,5 +1,5 @@
 {
-  "id": "io.github.hellohq.report-pack",
+  "id": "com.hellohq.report-pack",
   "name": "Family Meeting Report Pack",
   "version": "1.0.0",
   "description": "Family-meeting report of total assets by portfolio and currency, in English and Simplified Chinese. Saves a Markdown, text or HTML file. Information only.",
@@ -7,7 +7,11 @@
   "author_url": "https://hellohq.io",
   "repo": "https://github.com/HelloHQ/plugin-sdk",
   "license": "Apache-2.0",
-  "categories": ["reporting", "finance", "export"],
+  "categories": [
+    "reporting",
+    "finance",
+    "export"
+  ],
   "min_host_version": "2.0.0",
   "execution_mode": "sidecar",
   "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/report-pack-v1.0.0/plugin.py",
@@ -15,12 +19,34 @@
   "ui_type": "webview",
   "ui_bundle_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/report-pack-v1.0.0/ui.zip",
   "ui_bundle_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "sidebar_icon": "https://github.com/HelloHQ/plugin-sdk/releases/download/report-pack-v1.0.0/icon.svg",
   "entry_function": "run",
+  "trust_tier": "official",
+  "provenance": "core",
+  "licensing": {
+    "kind": "open_source",
+    "spdx": "Apache-2.0"
+  },
   "permissions": [
-    { "id": "read:portfolio_names", "reason": "Name each portfolio in the report." },
-    { "id": "read:asset_count", "reason": "Tell portfolios with liabilities apart, so their mixed totals are not shown as assets." },
-    { "id": "read:currency_rates", "reason": "Show each total's currency code. The rates are never used; nothing is converted." },
-    { "id": "read:aggregated_values", "reason": "The per-portfolio, per-currency totals the report shows." },
-    { "id": "write:external_output", "reason": "Save the report you choose through the system save dialog." }
+    {
+      "id": "read:portfolio_names",
+      "reason": "Name each portfolio in the report."
+    },
+    {
+      "id": "read:asset_count",
+      "reason": "Tell portfolios with liabilities apart, so their mixed totals are not shown as assets."
+    },
+    {
+      "id": "read:currency_rates",
+      "reason": "Show each total's currency code. The rates are never used; nothing is converted."
+    },
+    {
+      "id": "read:aggregated_values",
+      "reason": "The per-portfolio, per-currency totals the report shows."
+    },
+    {
+      "id": "write:external_output",
+      "reason": "Save the report you choose through the system save dialog."
+    }
   ]
 }

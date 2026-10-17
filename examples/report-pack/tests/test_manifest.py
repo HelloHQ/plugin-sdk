@@ -7,7 +7,7 @@ import json
 
 from conftest import EXAMPLE_DIR
 
-import plugin
+import report_pack as plugin
 
 MANIFEST = json.loads((EXAMPLE_DIR / "manifest.json").read_text(encoding="utf-8"))
 SIBLING = json.loads(
@@ -49,19 +49,25 @@ def test_no_network_no_ai_no_storage() -> None:
     }
 
 
-def test_needs_verified_tier_but_does_not_self_declare_it() -> None:
+def test_is_a_first_party_official_plugin() -> None:
     # read:aggregated_values, write:external_output, sidecar and webview are
-    # Verified-only (docs/plugin/03, 04). The registry team sets trust_tier at
-    # merge; a plugin must not set it itself.
+    # Verified-only (docs/plugin/03, 04); an Official plugin satisfies that. The
+    # id sits in HelloHQ's reserved namespace, which no author certificate can
+    # cover, and the Official signer signs it (hqplugin publish --first-party).
     ids = {p["id"] for p in MANIFEST["permissions"]}
     assert {"read:aggregated_values", "write:external_output"} <= ids
     assert MANIFEST["execution_mode"] == "sidecar" and MANIFEST["ui_type"] == "webview"
-    assert "trust_tier" not in MANIFEST
+    assert MANIFEST["id"] == "com.hellohq.report-pack"
+    assert (MANIFEST["trust_tier"], MANIFEST["provenance"]) == ("official", "core")
+    assert MANIFEST["licensing"] == {"kind": "open_source", "spdx": "Apache-2.0"}
     assert "publisher_signing_key_id" not in MANIFEST
 
 
 def test_manifest_has_the_same_shape_as_the_existing_sidecar_examples() -> None:
-    assert set(MANIFEST) == set(SIBLING)
+    # The sibling is a plain example; this one is also Official and has an icon.
+    assert set(MANIFEST) == set(SIBLING) | {
+        "trust_tier", "provenance", "licensing", "sidebar_icon",
+    }  # fmt: skip
     for key in (
         "execution_mode",
         "ui_type",
@@ -84,10 +90,11 @@ def test_manifest_has_the_same_shape_as_the_existing_sidecar_examples() -> None:
     assert "report-pack" in MANIFEST["wasm_url"] and MANIFEST["wasm_url"].endswith(
         "plugin.py"
     )
+    assert MANIFEST["sidebar_icon"].endswith("/report-pack-v1.0.0/icon.svg")
 
 
 def test_plugin_source_imports_nothing_that_can_reach_the_network_or_ai() -> None:
-    tree = ast.parse((EXAMPLE_DIR / "plugin.py").read_text(encoding="utf-8"))
+    tree = ast.parse((EXAMPLE_DIR / "report_pack.py").read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -98,7 +105,7 @@ def test_plugin_source_imports_nothing_that_can_reach_the_network_or_ai() -> Non
         "__future__", "html", "math", "re", "unicodedata", "datetime", "decimal",
         "typing", "hellohq_plugin_sdk",
     }, imported  # fmt: skip
-    source = (EXAMPLE_DIR / "plugin.py").read_text(encoding="utf-8")
+    source = (EXAMPLE_DIR / "report_pack.py").read_text(encoding="utf-8")
     for call in (
         "ai_complete",
         "http_request",
@@ -107,3 +114,29 @@ def test_plugin_source_imports_nothing_that_can_reach_the_network_or_ai() -> Non
         "emit_event",
     ):
         assert call not in source
+
+
+def test_icon_is_a_plain_single_fill_svg() -> None:
+    """The registry's rules (plugin-registry scripts/verify-artifacts.mjs ``svgIconProblem``)."""
+    import re
+
+    raw = (EXAMPLE_DIR / "icon.svg").read_bytes()
+    assert len(raw) <= 64 * 1024
+    text = raw.decode("utf-8")
+    assert re.search(r"<svg[\s>/]", text, re.IGNORECASE)
+    banned = [
+        r"<script",
+        r"<foreignObject",
+        r"<!ENTITY",
+        r"<!DOCTYPE",
+        r"\son[a-z]+\s*=",
+        r"@import",
+        r"javascript:",
+        r"(?:xlink:)?href\s*=\s*[\"'](?!#)",
+        r"url\(\s*[\"']?(?!#)",
+        r"<(?:image|use|iframe|embed|object|audio|video|link|style)\b",
+    ]
+    for pattern in banned:
+        assert not re.search(pattern, text, re.IGNORECASE), pattern
+    assert 'viewBox="0 0 24 24"' in text
+    assert text.count("<path") == 1 and 'fill="currentColor"' in text

@@ -9,12 +9,14 @@ This is the first plugin of the HelloHQ plugin roadmap (wave 1). It is
 **information, never advice**: it shows what is recorded and says so; it never
 recommends a transaction or an action.
 
-> **Status:** example only. It cannot run end to end in the app yet — see
-> [Known gaps](#known-gaps) 1 — and plugins are held back in production.
+> **Status:** an Official first-party plugin, `com.hellohq.report-pack`, built
+> and released from this directory (tag `report-pack-v<semver>`) and published
+> with `hqplugin publish --first-party`. Plugins are not in a shipped app release
+> yet. Read the [Known gaps](#known-gaps) before relying on the report.
 
 | Half | Lives in | Role |
 |------|----------|------|
-| **Compute** | `plugin.py` | Tier-1 Python sidecar (`hellohq-plugin-sdk`). Builds the report model and renders it in both languages and three formats. Pure functions, stdlib only. |
+| **Compute** | `report_pack.py` → `plugin.py` | Tier-1 Python sidecar (`hellohq-plugin-sdk`), shipped as one file `bundle.py` builds. Builds the report model and renders it in both languages and three formats. Pure functions, stdlib only. |
 | **UI** | `ui/` | Static WebView bundle (vanilla TypeScript). Previews the text report and saves the chosen format through the OS save dialog. |
 
 ## What the report contains
@@ -73,7 +75,7 @@ Net worth (净资产) is never shown; the notes say so.
 The host's `currency_id` is the workspace currency **row id**, not a code: the
 nine built-in currencies use fixed UUIDs (`uuid_for_currency.dart`),
 import-created rows `document-import-currency-<CODE>`, user-created rows any
-id. `plugin.py` resolves a code the way the app does
+id. `report_pack.py` resolves a code the way the app does
 (`currency_code_helper.dart`): built-in id, then the workspace currency row's
 code-shaped name or symbol (from `read:currency_rates`), then the import
 prefix, then a bare three-letter id (mock-host). An amount whose currency
@@ -85,7 +87,7 @@ cannot be identified is not shown, and a note counts it.
 it is not shown), 币种 (currency), 读取时间 (read at), 投资组合 (portfolio — the
 term the app's own Chinese UI uses). A test checks the terms appear and that
 variants (货币, 币别, 资产净值, 总负债, 债务, 截至) do not. The string table
-lives in `plugin.py` (`STRINGS`); a test keeps the two languages in
+lives in `report_pack.py` (`STRINGS`); a test keeps the two languages in
 key-and-placeholder lockstep. Traditional Chinese (`zh-Hant`, `zh-TW`, `zh-HK`)
 is rejected with `invalid_input` rather than silently served as Simplified;
 bare `zh` means Simplified.
@@ -108,7 +110,7 @@ registry team sets it at merge (docs/plugin/03). Deliberately **not**
 requested: `network:fetch`, `ai:inference`, `plugin:storage`,
 `read:sheet_structure`. The plugin sees no individual item, balance history or
 account identifier. Tests pin the permission list, check every context key
-`plugin.py` reads is declared, and check `plugin.py` imports nothing that can
+`report_pack.py` reads is declared, and check it imports nothing that can
 reach a network or the AI backend.
 
 ## Why a Tier-1 Python sidecar?
@@ -159,7 +161,7 @@ simply absent and the report says so. The shapes (`PluginDataAccessObject`):
 app's bridge rejects nested objects and `null`); the only argument is the
 language string. The preview uses `textContent`, never `innerHTML`.
 
-### Inside `plugin.py`
+### Inside `report_pack.py`
 
 1. `build_report(context, now)` → a language-neutral **model** (amounts as exact
    decimal strings, notes as codes). Amounts come from `Decimal(repr(float))`,
@@ -183,8 +185,10 @@ combined totals are summed before rounding.
 ./build.sh
 ```
 
-Checks `plugin.py` parses (it is the sidecar artifact itself, a single file
-importing only the stdlib and `hellohq_plugin_sdk`), builds the in-repo JS SDK
+Bundles the SDK's sidecar loop and `report_pack.py` into the one file `plugin.py`
+(`bundle.py`; the app runs that file with `python -I` and nothing installed, the
+Python SDK is not on PyPI, so it imports only the standard library and two builds
+give identical bytes), checks it compiles, builds the in-repo JS SDK
 (`sdks/js/dist` is not committed), type-checks and bundles the UI with esbuild,
 zips `ui/dist` into a reproducible `ui.zip` (fixed order and timestamps), and
 prints both sha256 hashes to paste into `manifest.json` at release time
@@ -197,8 +201,8 @@ Requirements: Node 20+ and npm, Python 3.11+, `zip`.
 ```bash
 cd examples/report-pack
 ./build.sh                                  # so tests/test_build.py can check ui.zip
-uv run --no-project --with pytest --with pytest-cov pytest --cov=plugin --cov-report=term-missing
-uvx ruff@0.16.8 check plugin.py tests && uvx ruff@0.16.8 format --check plugin.py tests
+uv run --no-project --with pytest --with pytest-cov pytest --cov=report_pack --cov-report=term-missing
+uvx ruff@0.16.8 check report_pack.py bundle.py tests && uvx ruff@0.16.8 format --check report_pack.py bundle.py tests
 (cd ../../sdks/js && npm test)              # HQHost against the app's HQBridge shim
 ```
 
@@ -216,11 +220,15 @@ CI runs all of this in the `Report Pack example` job, plus the sidecar through
   are very long, empty, multi-line, bidi-spoofed or full of Markdown/HTML.
   Regenerate goldens after an intentional wording change with
   `UPDATE_GOLDEN=1 pytest` and review the diff.
-- `tests/test_sidecar_e2e.py` — runs `plugin.py` as the real sidecar process
-  over the NDJSON protocol the host speaks (ready → `run` RPC → shutdown), with
+- `tests/test_bundle.py` — the bundle imports only the standard library, is
+  reproducible, keeps the line separators the source holds inside string
+  literals, and runs under `python -I` with no SDK.
+- `tests/test_sidecar_e2e.py` — runs the bundled `plugin.py` as the real sidecar
+  process, the way the app does (`python -I`, empty environment), over the NDJSON
+  protocol the host speaks (ready → `run` RPC → shutdown), with
   host-shaped context, in both languages, plus withheld-amount, denied-context,
   repeat-call and error-envelope cases.
-- `tests/test_manifest.py` — permission set and reasons, Verified tier, manifest
+- `tests/test_manifest.py` — permission set and reasons, Official tier, icon rules, manifest
   shape vs. the sibling example, and the no-network / no-AI import guard.
 - `tests/test_build.py` — the built `ui.zip`: expected files, entrypoint,
   reproducible timestamps, nothing the host CSP blocks (no inline script, no
@@ -234,15 +242,12 @@ CI runs all of this in the `Report Pack example` job, plus the sidecar through
 
 Read these before relying on the report.
 
-1. **The app cannot run this plugin end to end yet.** The WebView pane sends
-   every `compute` to the Tier-2 (Wasm component) executor
-   (`plugin_webview_host.dart` `_buildBridge` uses
-   `pluginTier2ExecutorProvider`), so a sidecar plugin's `compute` fails there.
-   docs/plugin/07 says the host routes `compute` by the installed binary; the
-   code does not. Every sidecar + WebView example (`portfolio_summary`,
-   `fx-advisor`, `portfolio-analyst`, `notes-keeper`) has the same problem. Fix
-   in hellohq: route WebView `compute` to `pluginTier1ExecutorProvider` for
-   `execution_mode: sidecar`.
+1. **WebView plus sidecar had no route (fixed).** This used to be listed as a
+   blocker: the WebView pane sent every `compute` to the Wasm executor. The app now
+   routes by the installed binary (`plugin_webview_compute.dart`), so a sidecar's
+   `compute` runs on the Tier-1 executor with every gate the declarative runner
+   applies. What has not been done is a run of this plugin in a release build of
+   the app; see the readiness review.
 2. **Totals mix assets and liabilities.** See
    [Why some amounts are withheld](#why-some-amounts-are-withheld). Many
    families hold a mortgage, so many reports will show few amounts. Fix in the
@@ -275,10 +280,10 @@ Read these before relying on the report.
    which reads all portfolios) uses it unscoped, as this plugin does. A report
    pack cannot know the person's portfolio ids in advance; the registry or the
    host will need a "chosen at install" scope.
-8. **No production use until signing ships.** Plugins are held back in
-   production: publisher signing (SA5) is dormant, and the committed hashes
-   are zeros (`hqplugin publish` pins real ones only once the files are
-   released). `trust_tier: verified` must be set by the registry team.
+8. **Not in a shipped release.** Plugins are held back in production until a
+   release includes them (`ProductFeaturePolicy`). Signing is enforced: the
+   Official signer signs this plugin's manifest, and the app refuses an
+   Official plugin without a valid hybrid signature.
 9. **Local CLI cannot feed context.** `hqplugin test --sidecar` calls `run`
    with empty args — `MockSidecarHost` does not build the `context` snapshot,
    and `--bundle` cannot load the UI. The CLI run (also in CI) therefore shows

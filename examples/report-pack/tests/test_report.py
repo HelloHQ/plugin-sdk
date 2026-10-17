@@ -17,7 +17,7 @@ import pytest
 from fixtures import CNY, EUR, GBP, IDR, JPY, KWD, SGD, USD
 from hellohq_plugin_sdk import PluginError, UnsupportedFunction
 
-import plugin
+import report_pack as plugin
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 LANGS = ("en", "zh-Hans")
