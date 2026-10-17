@@ -3,7 +3,7 @@
 It mirrors what the app (HelloHQ/hellohq) does for a sidecar run, so the shipped
 plugin.py is exercised the way a production build runs it:
 
-* launch: ``python -I -c <bootstrap> plugin.py`` with no PYTHONPATH and an
+* launch: ``python -I -B -c <bootstrap> plugin.py`` with no PYTHONPATH and an
   allowlisted environment, from a scratch working directory. The bootstrap is
   the app's network audit hook + ``runpy.run_path`` (lib/app/utils/service/
   plugin_sidecar_sandbox.dart ``pythonAuditHookBootstrap``), plus a recording
@@ -133,7 +133,7 @@ def run_sidecar(plugin: Path, context: dict[str, Any], tmp_path: Path, *, input:
     cwd.mkdir(exist_ok=True)
     env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "TMPDIR", "TEMP", "TMP") if k in os.environ}
     proc = subprocess.Popen(
-        [sys.executable, "-I", "-c", BOOTSTRAP, str(plugin)],
+        [sys.executable, "-I", "-B", "-c", BOOTSTRAP, str(plugin)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
