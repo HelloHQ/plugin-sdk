@@ -30,6 +30,10 @@ jobs:
             artifact: hqplugin-linux-x64
           - os: macos-latest
             artifact: hqplugin-macos-arm64
+          # Intel Macs: dart compile exe cannot cross-compile to macOS x64, so
+          # this builds natively on GitHub's Intel runner image.
+          - os: macos-15-intel
+            artifact: hqplugin-macos-x64
           - os: windows-latest
             artifact: hqplugin-windows-x64.exe
     steps:
