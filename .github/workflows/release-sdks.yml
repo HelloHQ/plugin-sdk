@@ -1,0 +1,99 @@
+name: Release SDKs
+
+# Tag-triggered SDK release (plugin-sdk#46). A tag is the release:
+#   sdks/go/vX.Y.Z       the Go module (the tag is what `go install` fetches)
+#   sdks/rust/vX.Y.Z     crates.io
+#   sdks/js/vX.Y.Z       npm, with provenance
+#   sdks/python/vX.Y.Z   PyPI trusted publishing
+# A slash in the tag keeps these off release-plugin.yml, whose filter is `*-v*`.
+# crates.io, npm and PyPI use the sdk-release environment. Do not push a tag
+# until that environment has the registry credentials for the language.
+
+on:
+  push:
+    tags:
+      - sdks/go/v*
+      - sdks/rust/v*
+      - sdks/js/v*
+      - sdks/python/v*
+
+permissions: {}
+
+concurrency:
+  group: release-sdks-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  go:
+    name: Go module
+    if: github.repository == 'HelloHQ/plugin-sdk' && startsWith(github.ref_name, 'sdks/go/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.24'
+      - name: Test the module the tag publishes
+        working-directory: sdks/go
+        run: go test ./...
+
+  rust:
+    name: crates.io
+    if: github.repository == 'HelloHQ/plugin-sdk' && startsWith(github.ref_name, 'sdks/rust/')
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish hellohq-plugin-sdk
+        working-directory: sdks/rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+  javascript:
+    name: npm
+    if: github.repository == 'HelloHQ/plugin-sdk' && startsWith(github.ref_name, 'sdks/js/')
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Build and publish @hellohq/plugin-sdk
+        working-directory: sdks/js
+        run: npm ci && npm run build && npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  python:
+    name: PyPI
+    if: github.repository == 'HelloHQ/plugin-sdk' && startsWith(github.ref_name, 'sdks/python/')
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish hellohq-plugin-sdk
+        uses: pypa/gh-action-pypi-publish@v1.13.0
+        with:
+          packages-dir: sdks/python

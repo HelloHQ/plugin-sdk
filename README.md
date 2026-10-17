@@ -39,6 +39,8 @@ This is the initial scaffold (Phase 4 — *begin*).
 | `cli` | `hqplugin` command surface (skeleton) |
 | `mock-host` | host ABI mock (skeleton) |
 
+A release tag publishes one SDK or the CLI: `sdks/go/vX.Y.Z`, `sdks/rust/vX.Y.Z`, `sdks/js/vX.Y.Z`, `sdks/python/vX.Y.Z`, or `cli/vX.Y.Z`. crates.io, npm, and PyPI use the `sdk-release` environment. No release tag has been cut, so the SDKs and the CLI still install from source.
+
 ## Protocol
 
 The contract these SDKs implement lives in

@@ -1,0 +1,111 @@
+name: Release hqplugin
+
+# Tag cli/vX.Y.Z builds hqplugin from this repo and attaches the binaries to a
+# GitHub release. The CLI is not a pub.dev package: cli/pubspec.yaml depends on
+# the in-repo mock host, so publish_to stays none. The tag does not match
+# release-plugin.yml (`*-v*` does not match a slash).
+
+on:
+  push:
+    tags: ['cli/v*']
+
+permissions: {}
+
+concurrency:
+  group: release-hqplugin-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    if: github.repository == 'HelloHQ/plugin-sdk'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: hqplugin-linux-x64
+          - os: macos-latest
+            artifact: hqplugin-macos-arm64
+          - os: windows-latest
+            artifact: hqplugin-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: Compile hqplugin
+        working-directory: cli
+        run: dart pub get && dart compile exe bin/hqplugin.dart -o ../${{ matrix.artifact }}
+      - name: Record the checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.artifact }}" > "checksum-${{ matrix.artifact }}.txt"
+          else
+            shasum -a 256 "${{ matrix.artifact }}" > "checksum-${{ matrix.artifact }}.txt"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            checksum-${{ matrix.artifact }}.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release ${{ github.ref_name }}
+    needs: build
+    if: github.repository == 'HelloHQ/plugin-sdk'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: Verify staged checksums
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          set -euo pipefail
+          cat checksum-*.txt > SHA256SUMS
+          sha256sum --strict -c SHA256SUMS
+      - name: Refuse to touch an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tags=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[].tag_name')
+          if grep -Fxq -- "$TAG" <<<"$tags"; then
+            echo "::error::A release for ${TAG} already exists. Released binaries are immutable; ship a new version instead."
+            exit 1
+          fi
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ runner.temp }}/release/hqplugin-*
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --latest=false \
+            --title "$TAG" \
+            --notes "hqplugin binaries built from ${TAG}." \
+            "${RUNNER_TEMP}"/release/hqplugin-* \
+            "${RUNNER_TEMP}"/release/SHA256SUMS

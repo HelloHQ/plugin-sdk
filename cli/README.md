@@ -2,6 +2,10 @@
 
 Build, test, and publish HelloHQ plugins.
 
+A `cli/vX.Y.Z` tag builds Linux, macOS, and Windows binaries and attaches them
+to a GitHub release. Until that tag exists, run it from this repo. It stays off
+pub.dev: `cli/pubspec.yaml` depends on the in-repo mock host (`publish_to: none`).
+
 ```bash
 dart pub get
 dart run bin/hqplugin.dart --help
