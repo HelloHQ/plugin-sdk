@@ -1,0 +1,35 @@
+# Self-contained project for the hello-calvinx example: tests + lint only.
+# The plugin itself ships as ONE file, plugin.py, built by build.sh (bundle.py).
+[project]
+name = "hellohq-example-hello-calvinx"
+version = "1.0.0"
+description = "Hello Calvin: minimal reference Tier-1 (Python sidecar) plugin."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "jsonschema>=4.18", "hellohq-plugin-sdk"]
+
+[tool.uv.sources]
+hellohq-plugin-sdk = { path = "../../sdks/python" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# plugin.py is generated (bundle.py) from SDK sources ruff checks elsewhere.
+extend-exclude = ["plugin.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["E501", "S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hello_calvinx", "bundle", "host_double"]

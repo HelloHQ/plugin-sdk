@@ -1,0 +1,30 @@
+{
+  "id": "com.calvinx.hello",
+  "name": "Hello Calvin",
+  "version": "1.0.0",
+  "description": "A minimal Python plugin that lists your portfolio names. It exists to exercise author-signed publishing.",
+  "author": "Calvin Cheng",
+  "author_url": "https://github.com/calvinchengx",
+  "repo": "https://github.com/HelloHQ/plugin-sdk",
+  "license": "Apache-2.0",
+  "categories": [
+    "utilities"
+  ],
+  "min_host_version": "2.0.0",
+  "execution_mode": "sidecar",
+  "wasm_url": "https://github.com/HelloHQ/plugin-sdk/releases/download/hello-calvinx-v1.0.0/plugin.py",
+  "content_hash_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ui_type": "declarative",
+  "sidebar_icon": "https://github.com/HelloHQ/plugin-sdk/releases/download/hello-calvinx-v1.0.0/icon.svg",
+  "entry_function": "run",
+  "provenance": "community",
+  "licensing": {
+    "kind": "open_source",
+    "spdx": "Apache-2.0"
+  },
+  "permissions": [
+    {
+      "id": "read:portfolio_names"
+    }
+  ]
+}

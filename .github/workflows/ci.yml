@@ -289,7 +289,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [filings-companion, hello-python, macro-context, property-estimates, wallet-tracker]
+        example: [filings-companion, hello-calvinx, hello-python, macro-context, property-estimates, wallet-tracker]
         python-version: ['3.11', '3.12']
     defaults:
       run:
