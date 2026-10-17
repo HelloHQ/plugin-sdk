@@ -279,17 +279,17 @@ jobs:
   # through a path source or the tests' sys.path). Pure Python, so one Linux
   # runner on the oldest and newest supported Python is enough. report-pack has
   # no pyproject and its own job above. Add a new example directory here.
-  # The manifest and sidecar tests of wallet-tracker and property-estimates
-  # validate against plugin-registry's manifest schema and plugin-protocol's
-  # host-calls schema; the checkouts below make a missing schema a failure
-  # (HELLOHQ_REQUIRE_*) instead of a skip.
+  # The manifest and sidecar tests of hello-python, wallet-tracker and
+  # property-estimates validate against plugin-registry's manifest schema and
+  # plugin-protocol's sidecar schemas; the checkouts below make a missing
+  # schema a failure (HELLOHQ_REQUIRE_*) instead of a skip.
   examples:
     name: Example ${{ matrix.example }} (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        example: [filings-companion, macro-context, property-estimates, wallet-tracker]
+        example: [filings-companion, hello-python, macro-context, property-estimates, wallet-tracker]
         python-version: ['3.11', '3.12']
     defaults:
       run:
@@ -687,11 +687,25 @@ jobs:
             --sidecar examples/report-pack
         shell: bash
 
+      # The shipped single-file artifact (build.sh bundles the SDK loop in, so
+      # it runs with nothing installed) starts, answers and exits on every OS.
+      # The CLI sends an empty context, so this is the "names unavailable"
+      # document; the names, zero and refusal cases, with schema-validated
+      # messages, are examples/hello-python/tests/test_sidecar_e2e.py.
+      - name: Run hello-python through hqplugin test (Tier-1 sidecar, declarative UI)
+        run: |
+          examples/hello-python/build.sh
+          dart run cli/bin/hqplugin.dart test \
+            --sidecar examples/hello-python/plugin.py \
+            --input '{"function":"main","args":{}}'
+        shell: bash
+
   # ── Release tooling (Linux only) ───────────────────────────────────────────
   # scripts/release_plugin_check.py validates the tag + manifest and stages the
   # assets for .github/workflows/release-plugin.yml. Its tests cover good and
   # bad tags, version mismatch, URLs pointing at another tag/repo, missing
-  # assets, and the real examples/hello-world manifest.
+  # assets, execution modes (a sidecar's stdlib-only .py asset), and the real
+  # examples/hello-world and examples/hello-python manifests.
   release-tooling:
     name: Release tooling (release_plugin_check)
     runs-on: ubuntu-latest

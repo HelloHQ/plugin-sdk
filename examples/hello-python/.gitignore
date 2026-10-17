@@ -1,0 +1,7 @@
+# Build output: build.sh bundles hello_python.py + the SDK loop into plugin.py.
+/plugin.py
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+uv.lock

@@ -5,6 +5,8 @@ Official plugin in the public registry
 ([HelloHQ/plugin-registry](https://github.com/HelloHQ/plugin-registry),
 `plugins/com.hellohq.hello-world/manifest.json`).
 
+Its Tier-1 (Python sidecar) counterpart is [`hello-python`](../hello-python).
+
 A Tier-2 `hellohq:plugin@0.1.0` component written in Rust with
 [`hellohq-plugin-sdk`](../../sdks/rust) (`no_std`, `setup_guest!`,
 `export_plugin!`, like [`component-quickstart`](../component-quickstart)).
