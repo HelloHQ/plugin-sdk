@@ -11,15 +11,20 @@ runner. Tests: scripts/test_release_plugin_check.py.
       that every release URL in the manifest (wasm_url, ui_bundle_url,
       sidebar_icon) is exactly
       https://github.com/HelloHQ/plugin-sdk/releases/download/<TAG>/<basename>.
+      execution_mode must be "wasm" (wasm_url names a .wasm) or "sidecar"
+      (wasm_url names the single .py file the host runs).
       Prints the result; with --github-output also appends dir=, version=,
-      prerelease=, ui_type=, needs_node=, assets= for later steps.
+      prerelease=, ui_type=, execution_mode=, needs_node=, needs_rust=,
+      needs_wasm_tools=, assets= for later steps.
 
   stage --tag TAG --out DIR --notes FILE [--commit SHA] [--run-url URL]
         [--tool NAME=VERSION ...]
       Re-run `check`, then require each asset (built by build.sh) to exist in
       examples/<dir>/, copy them to DIR, write DIR/SHA256SUMS (sha256sum
       format) and the release notes (asset / sha256 / bytes table, toolchain,
-      source commit) to FILE.
+      source commit) to FILE. A sidecar's .py asset must also compile and
+      import only the standard library (sidecar_source_problem): the host
+      installs nothing, and the Python SDK is not on PyPI.
 
 Exit status 1 with a `::error::` line on any problem.
 """
@@ -27,6 +32,7 @@ Exit status 1 with a `::error::` line on any problem.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -56,6 +62,10 @@ ASSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # Manifest fields that name a release asset, in upload order.
 URL_FIELDS = ("wasm_url", "ui_bundle_url", "sidebar_icon")
 
+# execution_mode -> the extension wasm_url's asset must have. A sidecar ships
+# the Python source the host runs, a Wasm plugin a compiled module/component.
+EXECUTION_MODES = {"wasm": ".wasm", "sidecar": ".py"}
+
 
 class CheckError(Exception):
     pass
@@ -71,6 +81,13 @@ class Release:
     example: Path
     assets: list[str] = field(default_factory=list)
     needs_node: bool = False
+    execution_mode: str = "wasm"
+    # Toolchains build.sh needs: Rust for a Cargo example, wasm-tools to wrap
+    # any Wasm plugin into a component. A sidecar needs neither (python3 only).
+    needs_rust: bool = False
+    needs_wasm_tools: bool = False
+    # A sidecar that declares python_runtime dependencies may import them.
+    python_dependencies: bool = False
 
 
 def parse_tag(tag: str) -> tuple[str, str, bool]:
@@ -135,6 +152,13 @@ def check(tag: str, root: Path) -> Release:
     if not isinstance(ui_type, str):
         raise CheckError("manifest.ui_type must be a string")
 
+    execution_mode = manifest.get("execution_mode", "wasm")
+    if execution_mode not in EXECUTION_MODES:
+        raise CheckError(
+            f"manifest.execution_mode is {execution_mode!r}; expected one of "
+            f"{', '.join(sorted(EXECUTION_MODES))}"
+        )
+
     if manifest.get("wasm_url") is None:
         raise CheckError("manifest.wasm_url is missing")
 
@@ -159,6 +183,16 @@ def check(tag: str, root: Path) -> Release:
             raise CheckError(f"manifest.{name} reuses the asset name {basename!r}")
         assets.append(basename)
 
+    ext = EXECUTION_MODES[execution_mode]
+    if not assets[0].endswith(ext):
+        raise CheckError(
+            f"manifest.wasm_url names {assets[0]!r}, but an execution_mode "
+            f"{execution_mode!r} plugin ships a {ext} file"
+        )
+
+    runtime = manifest.get("python_runtime")
+    python_dependencies = isinstance(runtime, dict) and bool(runtime.get("dependencies"))
+
     return Release(
         tag=tag,
         dir=example_dir,
@@ -168,7 +202,47 @@ def check(tag: str, root: Path) -> Release:
         example=example,
         assets=assets,
         needs_node=(example / "ui" / "package.json").is_file(),
+        execution_mode=execution_mode,
+        needs_rust=(example / "Cargo.toml").is_file(),
+        needs_wasm_tools=execution_mode == "wasm",
+        python_dependencies=python_dependencies,
     )
+
+
+def sidecar_source_problem(source: bytes, allow_third_party: bool = False) -> str | None:
+    """Why [source] cannot ship as a sidecar's single .py file, or None.
+
+    It must be UTF-8 Python that compiles, and (unless the manifest declares
+    python_runtime dependencies) import only the standard library: the host
+    runs the one file with nothing installed, so an import of
+    ``hellohq_plugin_sdk`` (not on PyPI) or of the example's own package (an
+    unbundled adapter) would fail on the person's machine. Parsed, never run.
+    """
+    try:
+        text = source.decode("utf-8")
+        tree = ast.parse(text)
+        compile(tree, "<sidecar>", "exec", dont_inherit=True)
+    except (UnicodeDecodeError, SyntaxError, ValueError) as e:
+        return f"is not Python that compiles ({e.__class__.__name__}: {e})"
+    if allow_third_party:
+        return None
+    stdlib = set(sys.stdlib_module_names) | {"__future__"}
+    outside: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            outside |= {a.name.split(".")[0] for a in node.names} - stdlib
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                outside.add("." * node.level + (node.module or ""))
+            elif node.module.split(".")[0] not in stdlib:
+                outside.add(node.module.split(".")[0])
+    if outside:
+        return (
+            "imports modules outside the standard library: "
+            f"{', '.join(sorted(outside))} (bundle them into the file; the host "
+            "installs nothing)"
+        )
+    return None
 
 
 def _sha256(path: Path) -> str:
@@ -197,6 +271,10 @@ def stage(
         size = src.stat().st_size
         if size == 0:
             raise CheckError(f"asset {name!r} is empty")
+        if release.execution_mode == "sidecar" and name == release.assets[0]:
+            why = sidecar_source_problem(src.read_bytes(), release.python_dependencies)
+            if why:
+                raise CheckError(f"sidecar asset {name!r} {why}")
         rows.append((name, _sha256(src), size))
 
     out.mkdir(parents=True, exist_ok=True)
@@ -251,7 +329,10 @@ def _write_outputs(path: Path, release: Release) -> None:
         "version": release.version,
         "prerelease": "true" if release.prerelease else "false",
         "ui_type": release.ui_type,
+        "execution_mode": release.execution_mode,
         "needs_node": "true" if release.needs_node else "false",
+        "needs_rust": "true" if release.needs_rust else "false",
+        "needs_wasm_tools": "true" if release.needs_wasm_tools else "false",
         "assets": " ".join(release.assets),
     }
     for k, v in values.items():
@@ -304,7 +385,8 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"ok: examples/{release.dir} v{release.version}"
                 f"{' (prerelease)' if release.prerelease else ''}; "
-                f"ui_type={release.ui_type}; assets: {', '.join(release.assets)}"
+                f"execution_mode={release.execution_mode}; ui_type={release.ui_type}; "
+                f"assets: {', '.join(release.assets)}"
             )
         else:
             rows = stage(

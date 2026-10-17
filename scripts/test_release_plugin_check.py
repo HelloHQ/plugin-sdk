@@ -7,6 +7,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import sys
 import tempfile
@@ -255,6 +256,98 @@ class Check(Base):
         self.assertRejects("demo-v1.0.0", "does not exist")
 
 
+class ExecutionMode(Base):
+    """A Python sidecar is released like a Wasm plugin, minus the Rust/wasm assumptions."""
+
+    def sidecar(self, tag: str = "py-v1.0.0", **extra) -> Path:
+        return self.example(
+            "py",
+            manifest(tag, "1.0.0", **{"execution_mode": "sidecar", "wasm_url": f"{DL}/{tag}/plugin.py", **extra}),
+        )
+
+    def test_sidecar_release(self) -> None:
+        self.sidecar()
+        r = rpc.check("py-v1.0.0", self.root)
+        self.assertEqual(r.execution_mode, "sidecar")
+        self.assertEqual(r.assets, ["plugin.py", "icon.svg"])
+        self.assertFalse(r.needs_rust)
+        self.assertFalse(r.needs_wasm_tools)
+
+    def test_wasm_toolchain_flags(self) -> None:
+        tag = "rs-v1.0.0"
+        d = self.example("rs", manifest(tag, "1.0.0"))
+        r = rpc.check(tag, self.root)
+        self.assertFalse(r.needs_rust)  # no Cargo.toml: e.g. a Go or JS component
+        self.assertTrue(r.needs_wasm_tools)
+        (d / "Cargo.toml").write_text("[package]\n")
+        r = rpc.check(tag, self.root)
+        self.assertTrue(r.needs_rust)
+        self.assertTrue(r.needs_wasm_tools)
+
+    def test_execution_mode_defaults_to_wasm(self) -> None:
+        tag = "demo-v1.0.0"
+        self.example("demo", manifest(tag, "1.0.0", execution_mode=None))
+        self.assertEqual(rpc.check(tag, self.root).execution_mode, "wasm")
+
+    def test_unknown_execution_mode(self) -> None:
+        self.example("demo", manifest("demo-v1.0.0", "1.0.0", execution_mode="native"))
+        self.assertRejects("demo-v1.0.0", "execution_mode is 'native'")
+
+    def test_sidecar_must_ship_a_py_file(self) -> None:
+        tag = "py-v1.0.0"
+        self.sidecar(wasm_url=f"{DL}/{tag}/plugin.wasm")
+        self.assertRejects(tag, "ships a .py file")
+
+    def test_wasm_must_ship_a_wasm_file(self) -> None:
+        tag = "demo-v1.0.0"
+        self.example("demo", manifest(tag, "1.0.0", wasm_url=f"{DL}/{tag}/plugin.py"))
+        self.assertRejects(tag, "ships a .wasm file")
+
+    def stage_source(self, source: str, **extra) -> None:
+        d = self.sidecar(**extra)
+        (d / "plugin.py").write_text(source)
+        (d / "icon.svg").write_text("<svg/>")
+        rpc.stage(rpc.check("py-v1.0.0", self.root), self.root / "_out", self.root / "notes.md")
+
+    def test_stages_a_stdlib_only_sidecar(self) -> None:
+        self.stage_source("from __future__ import annotations\nimport json, sys\nfrom typing import Any\n")
+        self.assertEqual(
+            sorted(p.name for p in (self.root / "_out").iterdir()),
+            ["SHA256SUMS", "icon.svg", "plugin.py"],
+        )
+
+    def test_rejects_a_sidecar_that_imports_the_sdk(self) -> None:
+        with self.assertRaises(rpc.CheckError) as cm:
+            self.stage_source("from hellohq_plugin_sdk import serve\nimport json\n")
+        self.assertIn("outside the standard library: hellohq_plugin_sdk", str(cm.exception))
+
+    def test_rejects_an_unbundled_adapter(self) -> None:
+        # The shape of a package-plus-adapter example before bundling.
+        with self.assertRaises(rpc.CheckError) as cm:
+            self.stage_source("import requests\nfrom wallet_tracker.tracker import scan\nfrom .x import y\n")
+        self.assertIn(".x, requests, wallet_tracker", str(cm.exception))
+
+    def test_rejects_a_sidecar_that_does_not_compile(self) -> None:
+        with self.assertRaises(rpc.CheckError) as cm:
+            self.stage_source("def broken(:\n")
+        self.assertIn("is not Python that compiles", str(cm.exception))
+
+    def test_declared_python_dependencies_may_be_imported(self) -> None:
+        self.stage_source(
+            "import requests\n",
+            python_runtime={"requires_python": ">=3.11", "dependencies": ["requests==2.32.3"]},
+        )
+
+    def test_only_the_sidecar_source_is_parsed(self) -> None:
+        # icon.svg is not Python; a Wasm plugin's binary is not parsed either.
+        self.assertIsNone(rpc.sidecar_source_problem(b"import json\n"))
+        tag = "demo-v1.0.0"
+        d = self.example("demo", manifest(tag, "1.0.0"))
+        (d / "plugin.wasm").write_bytes(b"\0asm\xff")
+        (d / "icon.svg").write_text("<svg/>")
+        rpc.stage(rpc.check(tag, self.root), self.root / "_out", self.root / "notes.md")
+
+
 class Stage(Base):
     def setUp(self) -> None:
         super().setUp()
@@ -340,10 +433,29 @@ class Cli(Base):
                 "version=1.0.0-rc.2",
                 "prerelease=true",
                 "ui_type=declarative",
+                "execution_mode=wasm",
                 "needs_node=false",
+                "needs_rust=false",
+                "needs_wasm_tools=true",
                 "assets=plugin.wasm icon.svg",
             ],
         )
+
+    def test_sidecar_outputs_need_no_rust_or_wasm_tools(self) -> None:
+        tag = "py-v1.0.0"
+        self.example("py", manifest(tag, "1.0.0", execution_mode="sidecar", wasm_url=f"{DL}/{tag}/plugin.py"))
+        out = self.root / "gh_output"
+        self.assertEqual(
+            rpc.main(["--root", str(self.root), "check", "--tag", tag, "--github-output", str(out)]), 0
+        )
+        lines = out.read_text().splitlines()
+        for want in (
+            "execution_mode=sidecar",
+            "needs_rust=false",
+            "needs_wasm_tools=false",
+            "assets=plugin.py icon.svg",
+        ):
+            self.assertIn(want, lines)
 
     def test_check_failure_exit_code(self) -> None:
         self.assertEqual(
@@ -362,6 +474,29 @@ class RealRepo(unittest.TestCase):
         # listed in SHA256SUMS and the notes by `stage`).
         self.assertEqual(r.assets, ["plugin.wasm", "icon.svg"])
         self.assertTrue((REPO_ROOT / "examples" / "hello-world" / "icon.svg").is_file())
+
+    def test_hello_python_v1_0_0(self) -> None:
+        r = rpc.check("hello-python-v1.0.0", REPO_ROOT)
+        self.assertEqual((r.dir, r.version, r.execution_mode), ("hello-python", "1.0.0", "sidecar"))
+        self.assertEqual(r.assets, ["plugin.py", "icon.svg"])
+        self.assertFalse(r.needs_rust or r.needs_wasm_tools or r.needs_node)
+        self.assertTrue((REPO_ROOT / "examples" / "hello-python" / "icon.svg").is_file())
+
+    def test_hello_python_bundle_passes_the_sidecar_source_check(self) -> None:
+        # What build.sh writes to examples/hello-python/plugin.py (bundle.py).
+        path = REPO_ROOT / "examples" / "hello-python" / "bundle.py"
+        spec = importlib.util.spec_from_file_location("hello_python_bundle", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertIsNone(rpc.sidecar_source_problem(mod.build().encode("utf-8")))
+
+    def test_unbundled_sidecar_adapters_are_not_releasable(self) -> None:
+        # These examples ship dist/plugin.py; their committed plugin.py is the
+        # adapter that imports the SDK and the example's package.
+        for name in ("wallet-tracker", "property-estimates"):
+            src = (REPO_ROOT / "examples" / name / "plugin.py").read_bytes()
+            with self.subTest(example=name):
+                self.assertIn("hellohq_plugin_sdk", rpc.sidecar_source_problem(src) or "")
 
     def test_hello_world_wrong_version(self) -> None:
         # The released 1.0.0 tag no longer matches the manifest.

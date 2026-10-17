@@ -32,8 +32,9 @@ where practical.
 
 ## Releasing an example plugin
 
-Example plugins that the public registry lists (today: `examples/hello-world`)
-are released by `.github/workflows/release-plugin.yml`, which builds them in CI
+Example plugins that the public registry lists (today: `examples/hello-world`,
+a Rust Wasm component, and `examples/hello-python`, a Python sidecar) are
+released by `.github/workflows/release-plugin.yml`, which builds them in CI
 from the tagged source. Nothing is built or uploaded from a laptop.
 
 1. In `examples/<dir>/manifest.json`, set `version` to the new version and point
@@ -42,7 +43,12 @@ from the tagged source. Nothing is built or uploaded from a laptop.
    exactly `https://github.com/HelloHQ/plugin-sdk/releases/download/<dir>-v<version>/<file>`.
    (A WebView plugin's `sidebar_icon` may instead be a path inside its UI
    bundle.) `examples/<dir>/build.sh` must produce each `<file>` in
-   `examples/<dir>/`, or it must be committed there.
+   `examples/<dir>/`, or it must be committed there. A Wasm plugin's
+   `wasm_url` names a `.wasm` file; a sidecar's (`execution_mode: "sidecar"`)
+   names the single `.py` file the host runs, which must import only the
+   standard library (the host installs nothing and the Python SDK is not on
+   PyPI; bundle it, as `examples/hello-python/bundle.py` does) unless the
+   manifest declares `python_runtime` dependencies.
 2. Merge that to `main`, then tag the merge commit and push the tag:
 
    ```sh
@@ -54,7 +60,9 @@ from the tagged source. Nothing is built or uploaded from a laptop.
    `-<prerelease>` suffix (published as a prerelease).
 3. The workflow checks the tag and manifest (`scripts/release_plugin_check.py`;
    run `python3 scripts/release_plugin_check.py check --tag <tag>` first to
-   catch mistakes), runs `build.sh`, and creates the release
+   catch mistakes), installs only the toolchains the example needs (Rust for a
+   Cargo example, wasm-tools for a Wasm plugin, Node for a WebView bundle),
+   runs `build.sh`, and creates the release
    "`<dir>` v`<version>`" with the assets, a `SHA256SUMS` file, a build
    provenance attestation for each asset, and notes listing each asset's
    SHA-256 and size, the toolchain versions and the source commit. It is never
