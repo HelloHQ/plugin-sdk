@@ -1577,6 +1577,7 @@ class _Publisher {
         ]),
         'publish: git add failed.',
       );
+      await _useCallerIdentity(git);
       _check(
         await git(['commit', '-m', _prTitle]),
         'publish: git commit failed.',
@@ -1614,6 +1615,35 @@ class _Publisher {
     } finally {
       await tmp.delete(recursive: true).catchError((_) => tmp);
     }
+  }
+
+  /// The throwaway clone lives in the system temp directory, where none of the
+  /// caller's folder-scoped git settings (an `includeIf` for a work address)
+  /// apply, so it would commit with the global identity. Use the identity git
+  /// resolves in the plugin's own directory instead; with none set there, the
+  /// clone keeps git's default.
+  Future<void> _useCallerIdentity(
+    Future<ProcessResult> Function(List<String> args) git,
+  ) async {
+    Future<String> configured(String key) async {
+      final r = await run('git', ['config', key], workingDirectory: pluginDir);
+      return r.exitCode == 0 ? '${r.stdout}'.trim() : '';
+    }
+
+    final email = await configured('user.email');
+    if (email.isEmpty) return;
+    final name = await configured('user.name');
+    _check(
+      await git(['config', 'user.email', email]),
+      'publish: could not set the commit email.',
+    );
+    if (name.isNotEmpty) {
+      _check(
+        await git(['config', 'user.name', name]),
+        'publish: could not set the commit name.',
+      );
+    }
+    o.writeln('publish: committing as $email');
   }
 
   /// verify-artifacts.mjs failures abort before the push, except a missing

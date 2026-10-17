@@ -141,6 +141,10 @@ class FakeWorld {
 
   /// Snapshot of the clone when the registry scripts ran.
   String? cloneDir;
+
+  /// The git identity git resolves in the plugin's directory (null: none set).
+  String? userEmail;
+  String? userName;
   String? writtenManifest;
   String? baseManifestArg;
   String? baseManifestContent;
@@ -293,6 +297,10 @@ class FakeWorld {
           p.join(cwd, 'plugins', _id, 'manifest.json'),
         ).readAsStringSync();
         return _ok();
+      case ['config', 'user.email'] when cwd != cloneDir:
+        return userEmail == null ? _fail(1, '') : _ok('$userEmail\n');
+      case ['config', 'user.name'] when cwd != cloneDir:
+        return userName == null ? _fail(1, '') : _ok('$userName\n');
       case ['commit', ...]:
         return commitResult;
     }
@@ -2067,6 +2075,53 @@ void main() {
       final r = await _publish(w, _pluginDir(_manifest()), submit: true);
       expect(r.code, 0, reason: '$r');
       expect(w.saw('gh pr create'), isTrue);
+    });
+
+    group('commit identity', () {
+      Iterable<Call> inClone(FakeWorld w) =>
+          w.calls.where((c) => c.exe == 'git' && c.cwd == w.cloneDir);
+
+      test('the clone commits as the identity git resolves in the plugin '
+          'directory, not the global one', () async {
+        final w = world()
+          ..userEmail = 'calvin@hellohq.com'
+          ..userName = 'Calvin Cheng';
+        final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+        expect(r.code, 0, reason: '$r');
+        final lines = inClone(w).map((c) => c.line).toList();
+        final email = lines.indexOf('git config user.email calvin@hellohq.com');
+        final name = lines.indexOf('git config user.name Calvin Cheng');
+        final commit = lines.indexWhere((l) => l.startsWith('git commit'));
+        expect(email, isNonNegative);
+        expect(name, isNonNegative);
+        expect(email, lessThan(commit));
+        expect(name, lessThan(commit));
+        expect(r.out, contains('committing as calvin@hellohq.com'));
+        // Asked in the plugin's directory, never in the clone.
+        final asked = w.calls.where(
+          (c) =>
+              c.exe == 'git' && c.args.first == 'config' && c.args.length == 2,
+        );
+        expect(asked.map((c) => c.cwd).toSet(), {isNot(w.cloneDir)});
+      });
+
+      test('with no identity set there the clone keeps git default', () async {
+        final w = world();
+        final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+        expect(r.code, 0, reason: '$r');
+        expect(inClone(w).where((c) => c.args.first == 'config'), isEmpty);
+        expect(r.out, isNot(contains('committing as')));
+      });
+
+      test('an email without a name sets only the email', () async {
+        final w = world()..userEmail = 'calvin@hellohq.com';
+        final r = await _publish(w, _pluginDir(_manifest()), submit: true);
+        expect(r.code, 0, reason: '$r');
+        final configs = inClone(w).where((c) => c.args.first == 'config');
+        expect(configs.map((c) => c.line), [
+          'git config user.email calvin@hellohq.com',
+        ]);
+      });
     });
 
     test('every push in either path is a publish/ branch', () async {
