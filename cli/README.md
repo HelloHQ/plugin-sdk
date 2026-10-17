@@ -19,8 +19,10 @@ dart run bin/hqplugin.dart test --wasm plugin.wasm --grant read:portfolio_names
 # Publish: pin the released files in the plugin registry (plan only).
 dart run bin/hqplugin.dart publish --dry-run
 
-# Author keys: create the hybrid key pair, then sign what you publish.
+# Author keys: create the hybrid key pair, enroll it, then sign what you publish.
 dart run bin/hqplugin.dart keys generate --out ~/.hqplugin/keys
+dart run bin/hqplugin.dart keys enroll --keys ~/.hqplugin/keys --slug acme-labs \
+  --prefix com.acme. --github-user octocat
 dart run bin/hqplugin.dart publish --sign-key ~/.hqplugin/keys --submit
 ```
 
@@ -230,7 +232,7 @@ signatures that do not verify before the push), 77 not permitted
 
 An author who holds a hybrid key (Ed25519 + ML-DSA-65) signs the artifact
 itself, so the registry can show the plugin as Verified under the author's
-enrolled key. Two steps, both once per author:
+enrolled key. Three steps; the first two are once per author:
 
 1. **Create the keys.**
 
@@ -243,10 +245,58 @@ enrolled key. Two steps, both once per author:
    public keys, and prints only the public keys and the file paths. On Windows
    the files inherit the folder's access list; the command prints an `icacls`
    line to restrict it.
-2. **Enroll the public keys.** Enrollment is a reviewed PR to the registry
-   (`authors/<slug>.json`: your identity, `public_keys` from `public-keys.json`,
-   the `id_prefixes` you may sign, and a proof that you hold the Ed25519 key).
-   The steps are in the registry's
+2. **Build the enrollment.** The registry enrolls an author through a reviewed
+   PR that adds `authors/<slug>.json`: your identity, your two public keys, the
+   plugin id prefixes you may sign and a proof that you hold the Ed25519 key.
+   `keys enroll` writes that file from the keys of step 1:
+
+   ```bash
+   hqplugin keys enroll --keys ~/.hqplugin/keys --slug acme-labs \
+     --prefix com.acme. --github-user octocat \
+     --registry-dir ~/src/plugin-registry
+   ```
+
+   - `--slug` is 3-40 characters of `a-z`, `0-9` and `-`; it names the file.
+   - `--prefix` (repeat it, up to 8) is a plugin id namespace you may sign:
+     dotted, ending in `.`, with at least two labels (`com.acme.` covers
+     `com.acme.widget`). `com.hellohq.` and anything under it is reserved. The
+     prefixes are sorted for you, as the registry requires, and the proof
+     covers the sorted list.
+   - Identity is `--github-user <login>`, which looks up the **numeric**
+     account id with `gh api users/<login>` (the id survives a rename, the
+     login does not) and warns when `gh` is logged in as a different account;
+     or `--oidc-subject <id>` with `--oidc-issuer <https url>` (default
+     `https://github.com`; a GitHub subject must be the numeric id).
+   - `--keys` defaults to `$HQPLUGIN_AUTHOR_KEY_DIR`, `--openssl` to
+     `$HQPLUGIN_OPENSSL` or `openssl` on PATH (ML-DSA-65 needs 3.5+ to read
+     your key, see OpenSSL below).
+   - `--out` is where the file goes, default `./<slug>.json`. It never
+     overwrites an existing file (exit 65).
+   - `--registry-dir` is a checkout of the plugin registry. The registry's own
+     `scripts/check-authors.mjs` then runs on a scratch copy of its enrolled
+     authors plus your file, so a key you reuse or a prefix that overlaps an
+     enrolled author is refused now (exit 65, the registry's text, no file
+     written) instead of in your PR. It needs `node`; without node it warns and
+     skips. Without `--registry-dir` those cross-author checks run only in the
+     registry's CI.
+
+   Everything is validated before anything is signed. The proof is an Ed25519
+   signature (`openssl pkeyutl -sign -rawin`, the same as for artifacts) over
+   the registry's enrollment statement; the command verifies it against the
+   public key in the file it is about to write and exits 70 without writing if
+   it does not verify. It prints the file path, the PR steps and the custody
+   reminder, and never prints private material. Exit codes: 64 usage, 65 bad
+   data (invalid slug, prefix or identity, unknown GitHub user, would
+   overwrite, the registry's check refused), 66 a key file or the registry
+   checkout is missing, 69 OpenSSL or `gh` unavailable, 70 internal
+   inconsistency.
+3. **Send it to the registry.** Enrollment is a reviewed PR, one author per PR:
+   fork and clone [`HelloHQ/plugin-registry`](https://github.com/HelloHQ/plugin-registry),
+   put the file at `authors/<slug>.json`, commit it on its own and open the PR
+   against `main`. The registry's CI re-checks the file; a maintainer reviews
+   it. After the merge the registry's signer issues your certificate. Its
+   schedule is best effort, so ask a maintainer to dispatch the signer to have
+   it issued straight away. The format is in the registry's
    [`authors/README.md`](https://github.com/HelloHQ/plugin-registry/blob/main/authors/README.md).
 
 Then publish with the key directory (`--sign-key <dir>` or
@@ -303,7 +353,13 @@ the registry, the signer against a fake and a real openssl) and
 `test/author_signing_interop_test.dart`, which checks the CLI's signatures with
 the registry's scripts and, when `$HQPLUGIN_MLDSA_VERIFY_LIB` points at a built
 [mldsa-verify](https://github.com/HelloHQ/mldsa-verify), with the app's
-ML-DSA-65 verifier. They use `$HELLOHQ_PLUGIN_REGISTRY_DIR` (a plugin-registry
+ML-DSA-65 verifier.
+`keys enroll` is covered by `test/author_enrollment_test.dart` (the enrollment
+statement and record rules pinned to the registry's real `authors/calvin.json`,
+and the command against a fake openssl, `gh` and `node`) and
+`test/author_enrollment_interop_test.dart`, which enrolls freshly generated
+keys and has the registry's own `scripts/check-authors.mjs` accept the file and
+refuse a reused key and an overlapping prefix. They use `$HELLOHQ_PLUGIN_REGISTRY_DIR` (a plugin-registry
 checkout; `HELLOHQ_REQUIRE_REGISTRY=1` fails instead of skipping) and
 `$HQPLUGIN_OPENSSL`; the ML-DSA ones skip without OpenSSL 3.5+ unless
 `HQPLUGIN_REQUIRE_OPENSSL_PQ=1`.

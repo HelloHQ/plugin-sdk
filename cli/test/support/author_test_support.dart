@@ -89,6 +89,7 @@ class FakeOpenSsl {
         if (k == null) return ProcessResult(1, 1, '', 'cannot read key\n');
         final alg = _algOf(k.alg);
         final raw = _expand(k.id, alg.publicKeyBytes);
+        _idOfRawPublicKey[base64.encode(raw)] = k.id;
         File(out).writeAsBytesSync([...alg.spkiPrefix, ...raw]);
         return ProcessResult(1, 0, '', '');
       case ['pkey', '-in', final key, '-pubout', '-out', final out]:
@@ -134,13 +135,13 @@ class FakeOpenSsl {
         '-sigfile',
         final sigFile,
       ]:
-        final m = RegExp(
-          r'FAKEPUB (\S+) (\S+)',
-        ).firstMatch(File(pub).readAsStringSync());
-        if (m == null) return ProcessResult(1, 1, '', 'bad public key\n');
-        final alg = _algOf(m.group(1)!);
+        final pubKey = _readPublicKey(File(pub).readAsStringSync());
+        if (pubKey == null) {
+          return ProcessResult(1, 1, '', 'bad public key\n');
+        }
+        final alg = _algOf(pubKey.alg);
         final want = _signature(
-          m.group(2)!,
+          pubKey.id,
           File(msg).readAsBytesSync(),
           alg.signatureBytes,
         );
@@ -174,6 +175,38 @@ class FakeOpenSsl {
     writeKey(p.join(dir.path, kEd25519KeyFile), 'ED25519', secret);
     writeKey(p.join(dir.path, kMlDsa65KeyFile), 'ML-DSA-65', secret);
     return dir;
+  }
+
+  /// Raw public key (base64) to the key id the fake derived it from, for the
+  /// PEM public keys the CLI builds itself from a raw key.
+  final Map<String, String> _idOfRawPublicKey = {};
+
+  /// The key a fake public key file stands for: the `FAKEPUB` stand-in the
+  /// fake's own `pkey -pubout` writes, or a real SubjectPublicKeyInfo PEM of a
+  /// raw public key the fake handed out earlier.
+  ({String alg, String id})? _readPublicKey(String text) {
+    final m = RegExp(r'FAKEPUB (\S+) (\S+)').firstMatch(text);
+    if (m != null) return (alg: m.group(1)!, id: m.group(2)!);
+    final body = RegExp(
+      r'-----BEGIN PUBLIC KEY-----([^-]+)-----END PUBLIC KEY-----',
+    ).firstMatch(text);
+    if (body == null) return null;
+    final Uint8List der;
+    try {
+      der = base64.decode(body.group(1)!.replaceAll(RegExp(r'\s'), ''));
+    } on FormatException {
+      return null;
+    }
+    for (final (name, alg) in [
+      ('ED25519', HybridAlgorithm.ed25519),
+      ('ML-DSA-65', HybridAlgorithm.mlDsa65),
+    ]) {
+      final prefix = alg.spkiPrefix;
+      if (der.length != prefix.length + alg.publicKeyBytes) continue;
+      final id = _idOfRawPublicKey[base64.encode(der.sublist(prefix.length))];
+      if (id != null) return (alg: name, id: id);
+    }
+    return null;
   }
 
   static HybridAlgorithm _algOf(String name) =>

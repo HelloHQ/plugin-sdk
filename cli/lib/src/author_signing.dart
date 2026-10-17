@@ -15,6 +15,7 @@
 // through a fresh private temp directory that is deleted afterwards.
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
@@ -458,29 +459,71 @@ class OpenSslTool {
           '$keyPath: ${sanitizeOpenSslText('${d.stderr}${d.stdout}')}',
         );
       }
-      final msg = File(p.join(dir.path, 'msg'))..writeAsBytesSync(message);
-      final sig = File(p.join(dir.path, 'sig'))..writeAsBytesSync(signature);
-      final r = await _exec([
-        'pkeyutl',
-        '-verify',
-        '-pubin',
-        '-inkey',
-        pub,
-        '-rawin',
-        '-in',
-        msg.path,
-        '-sigfile',
-        sig.path,
-      ]);
-      if (r.exitCode == 0) return true;
-      final text = '${r.stdout}${r.stderr}';
-      if (text.contains('Verification Failure')) return false;
+      return _verifyWithPublicPem(dir, alg, pub, message, signature);
+    });
+  }
+
+  /// Whether [signature] verifies over [message] under the *raw* public key
+  /// [rawPublicKey] (32 bytes for Ed25519, 1952 for ML-DSA-65), the form the
+  /// registry stores. The key is wrapped in its SubjectPublicKeyInfo and handed
+  /// to openssl as a PEM public key, so this checks the exact bytes an
+  /// enrollment publishes rather than a key re-derived from a private file.
+  Future<bool> verifyWithPublicKey(
+    HybridAlgorithm alg,
+    List<int> rawPublicKey,
+    List<int> message,
+    List<int> signature,
+  ) {
+    if (rawPublicKey.length != alg.publicKeyBytes) {
       throw SignerException(
         70,
-        'openssl could not check an ${alg.sigAlg} signature: '
-        '${sanitizeOpenSslText(text)}',
+        'an ${alg.sigAlg} public key is ${alg.publicKeyBytes} bytes, not '
+        '${rawPublicKey.length}.',
       );
+    }
+    return _withTemp((dir) async {
+      final b64 = base64.encode([...alg.spkiPrefix, ...rawPublicKey]);
+      final body = StringBuffer();
+      for (var i = 0; i < b64.length; i += 64) {
+        body.writeln(b64.substring(i, math.min(i + 64, b64.length)));
+      }
+      final pub = File(p.join(dir.path, 'pub.pem'))
+        ..writeAsStringSync(
+          '-----BEGIN PUBLIC KEY-----\n$body-----END PUBLIC KEY-----\n',
+        );
+      return _verifyWithPublicPem(dir, alg, pub.path, message, signature);
     });
+  }
+
+  Future<bool> _verifyWithPublicPem(
+    Directory dir,
+    HybridAlgorithm alg,
+    String pubPath,
+    List<int> message,
+    List<int> signature,
+  ) async {
+    final msg = File(p.join(dir.path, 'msg'))..writeAsBytesSync(message);
+    final sig = File(p.join(dir.path, 'sig'))..writeAsBytesSync(signature);
+    final r = await _exec([
+      'pkeyutl',
+      '-verify',
+      '-pubin',
+      '-inkey',
+      pubPath,
+      '-rawin',
+      '-in',
+      msg.path,
+      '-sigfile',
+      sig.path,
+    ]);
+    if (r.exitCode == 0) return true;
+    final text = '${r.stdout}${r.stderr}';
+    if (text.contains('Verification Failure')) return false;
+    throw SignerException(
+      70,
+      'openssl could not check an ${alg.sigAlg} signature: '
+      '${sanitizeOpenSslText(text)}',
+    );
   }
 
   /// Runs [body] with a fresh private temp directory, deleted afterwards.

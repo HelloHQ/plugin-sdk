@@ -130,9 +130,11 @@ Future<int> runKeysGenerate({
       o
         ..writeln()
         ..writeln(
-          'Next: enroll the public keys (see authors/README.md in '
-          'https://github.com/HelloHQ/plugin-registry), then publish with '
-          '`hqplugin publish --sign-key $dir`.',
+          'Next: build your registry enrollment with `hqplugin keys enroll '
+          '--keys $dir --slug <slug> --prefix <com.example.> '
+          '--github-user <login>`, send it to '
+          'https://github.com/HelloHQ/plugin-registry as a PR, then publish '
+          'with `hqplugin publish --sign-key $dir`.',
         );
       return 0;
     } catch (_) {

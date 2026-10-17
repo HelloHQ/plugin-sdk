@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:hqplugin/src/build.dart';
 import 'package:hqplugin/src/keys_cmd.dart';
+import 'package:hqplugin/src/keys_enroll.dart';
 import 'package:hqplugin/src/publish.dart';
 import 'package:hqplugin/src/test_cmd.dart';
 
@@ -245,10 +246,12 @@ class _KeysCommand extends Command<int> {
   @override
   final name = 'keys';
   @override
-  final description = 'Create the hybrid key pair an author signs plugins with.';
+  final description =
+      'Create the hybrid key pair an author signs plugins with, and enroll it.';
 
   _KeysCommand() {
     addSubcommand(_KeysGenerateCommand());
+    addSubcommand(_KeysEnrollCommand());
   }
 }
 
@@ -282,6 +285,98 @@ class _KeysGenerateCommand extends Command<int> {
     final a = argResults!;
     return runKeysGenerate(
       outDir: a['out'] as String?,
+      opensslPath: a['openssl'] as String?,
+    );
+  }
+}
+
+class _KeysEnrollCommand extends Command<int> {
+  @override
+  final name = 'enroll';
+  @override
+  final description =
+      'Write the registry enrollment file (authors/<slug>.json) for your keys.';
+
+  @override
+  String get invocation =>
+      'hqplugin keys enroll --keys <dir> --slug <slug> --prefix <p> '
+      '(--github-user <login> | --oidc-subject <id>) [options]';
+
+  _KeysEnrollCommand() {
+    argParser
+      ..addOption(
+        'keys',
+        valueHelp: 'dir',
+        help:
+            'The directory `keys generate` wrote (ed25519.pem, ml-dsa-65.pem). '
+            'Default: \$HQPLUGIN_AUTHOR_KEY_DIR.',
+      )
+      ..addOption(
+        'slug',
+        help: 'Your author slug: 3-40 chars of a-z, 0-9, "-". It names the file.',
+      )
+      ..addMultiOption(
+        'prefix',
+        valueHelp: 'com.example.',
+        help:
+            'A plugin id prefix you may sign: dotted, ending in ".", at least '
+            'two labels, not com.hellohq. Repeat for up to 8; they are sorted.',
+      )
+      ..addOption(
+        'github-user',
+        valueHelp: 'login',
+        help:
+            'Your GitHub login; the numeric account id is looked up with '
+            '`gh api users/<login>`. Excludes --oidc-subject.',
+      )
+      ..addOption(
+        'oidc-subject',
+        valueHelp: 'id',
+        help:
+            'The stable OIDC subject instead of --github-user (for GitHub: '
+            'the numeric account id, not the login).',
+      )
+      ..addOption(
+        'oidc-issuer',
+        valueHelp: 'https-url',
+        help: 'With --oidc-subject: the issuer. Default: https://github.com.',
+      )
+      ..addOption(
+        'out',
+        valueHelp: 'file',
+        help:
+            'Where to write the enrollment. Default: ./<slug>.json. Never '
+            'overwrites an existing file.',
+      )
+      ..addOption(
+        'registry-dir',
+        valueHelp: 'dir',
+        help:
+            'A plugin-registry checkout: run its own scripts/check-authors.mjs '
+            'on a scratch copy, which also catches a reused key or an '
+            'overlapping prefix. Needs node.',
+      )
+      ..addOption(
+        'openssl',
+        valueHelp: 'path',
+        help:
+            'OpenSSL 3.5+ binary. Default: \$HQPLUGIN_OPENSSL, else `openssl` '
+            'on PATH.',
+      );
+  }
+
+  @override
+  Future<int> run() async {
+    final a = argResults!;
+    return runKeysEnroll(
+      keysDir: a['keys'] as String?,
+      slug: a['slug'] as String?,
+      prefixes: a['prefix'] as List<String>,
+      githubUser: a['github-user'] as String?,
+      oidcSubject: a['oidc-subject'] as String?,
+      oidcIssuer: a['oidc-issuer'] as String?,
+      outPath: a['out'] as String?,
+      registryDir: a['registry-dir'] as String?,
       opensslPath: a['openssl'] as String?,
     );
   }

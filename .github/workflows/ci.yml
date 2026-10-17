@@ -560,11 +560,13 @@ jobs:
         run: dart pub get
         working-directory: cli
 
-      # Author-held signing (cli/test/author_signing*_test.dart) is checked
-      # against the registry's own scripts and statement vectors, so the job
-      # needs a plugin-registry checkout and node (the registry scripts have no
-      # npm dependencies). HELLOHQ_REQUIRE_REGISTRY makes a missing checkout a
-      # failure instead of a skip.
+      # Author-held signing and enrollment (cli/test/author_signing*_test.dart,
+      # cli/test/author_enrollment*_test.dart) are checked against the
+      # registry's own scripts (statement vectors, author-cert.mjs,
+      # check-authors.mjs), so the job needs a plugin-registry checkout and
+      # node (the registry scripts have no npm dependencies).
+      # HELLOHQ_REQUIRE_REGISTRY makes a missing checkout a failure instead of
+      # a skip.
       - uses: actions/checkout@v7
         with:
           repository: HelloHQ/plugin-registry
