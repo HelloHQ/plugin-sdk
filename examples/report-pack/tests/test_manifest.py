@@ -9,6 +9,12 @@ from conftest import EXAMPLE_DIR
 
 import report_pack as plugin
 
+#: The release this manifest describes (tag ``report-pack-v1.1.0``).
+VERSION = "1.1.0"
+RELEASE = (
+    f"https://github.com/HelloHQ/plugin-sdk/releases/download/report-pack-v{VERSION}/"
+)
+
 MANIFEST = json.loads((EXAMPLE_DIR / "manifest.json").read_text(encoding="utf-8"))
 SIBLING = json.loads(
     (EXAMPLE_DIR.parent / "portfolio_summary" / "manifest.json").read_text(
@@ -35,6 +41,17 @@ def test_every_context_read_the_plugin_uses_is_declared() -> None:
     declared = {p["id"] for p in MANIFEST["permissions"]}
     used = {plugin.NAMES, plugin.COUNTS, plugin.CURRENCIES, plugin.TOTALS}
     assert used | {"write:external_output"} == declared
+
+
+def test_asset_count_is_kept_only_for_the_older_host_fallback() -> None:
+    # `read:asset_count` is read only to classify a combined `total` from an older
+    # host (no `assets`/`debts`); the current host's rows never use it. The
+    # permission stays so that fallback keeps its 1.0.0 behaviour (and updating
+    # from 1.0.0 asks for no new approval); its reason says so.
+    reasons = {p["id"]: p["reason"] for p in MANIFEST["permissions"]}
+    assert "older HelloHQ" in reasons["read:asset_count"]
+    source = (EXAMPLE_DIR / "report_pack.py").read_text(encoding="utf-8")
+    assert source.count("ctx.get(COUNTS)") == 1  # read once, for the fallback
 
 
 def test_no_network_no_ai_no_storage() -> None:
@@ -90,7 +107,16 @@ def test_manifest_has_the_same_shape_as_the_existing_sidecar_examples() -> None:
     assert "report-pack" in MANIFEST["wasm_url"] and MANIFEST["wasm_url"].endswith(
         "plugin.py"
     )
-    assert MANIFEST["sidebar_icon"].endswith("/report-pack-v1.0.0/icon.svg")
+    assert MANIFEST["sidebar_icon"] == RELEASE + "icon.svg"
+
+
+def test_version_and_every_release_url_name_the_same_release() -> None:
+    assert MANIFEST["version"] == VERSION
+    assert MANIFEST["wasm_url"] == RELEASE + "plugin.py"
+    assert MANIFEST["ui_bundle_url"] == RELEASE + "ui.zip"
+    assert MANIFEST["sidebar_icon"] == RELEASE + "icon.svg"
+    # No URL still points at an older release.
+    assert "v1.0.0" not in json.dumps(MANIFEST)
 
 
 def test_plugin_source_imports_nothing_that_can_reach_the_network_or_ai() -> None:

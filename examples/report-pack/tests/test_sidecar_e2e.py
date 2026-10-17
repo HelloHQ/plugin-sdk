@@ -100,7 +100,7 @@ def test_sidecar_process_produces_the_report(lang: str) -> None:
     (reply,) = run_sidecar(fx.FAMILY, {"function": "report", "args": {"lang": lang}})
     assert reply["id"] == 1 and "error" not in reply
     result = reply["result"]
-    assert result["lang"] == lang and result["data_status"] == "partial"
+    assert result["lang"] == lang and result["data_status"] == "complete"
     # The clock is real here: compare everything except the timestamp.
     expected = plugin.generate(fx.FAMILY, lang, now=fx.NOW)
     stamp = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d(:\d\dZ)?")
@@ -114,14 +114,79 @@ def test_sidecar_process_produces_the_report(lang: str) -> None:
         assert "家庭会议报告" in result["documents"]["markdown"]["content"]
 
 
-def test_withheld_amounts_never_cross_the_pipe() -> None:
-    # The mortgaged home's SGD 1,250,000 / CNY 480,000.5 and the unclassified
-    # business's USD 48,000 must not reach the WebView in any form.
+def test_assets_liabilities_and_net_worth_cross_the_pipe() -> None:
+    # The mortgaged home: SGD 1,250,000 assets, 780,000.5 debts, as exact
+    # decimal strings on the wire, and its figures in every document.
     (reply,) = run_sidecar(fx.FAMILY, {"function": "report", "args": {"lang": "en"}})
+    wire_context = json.dumps(fx.FAMILY)
+    assert (
+        '"assets": "1250000"' in wire_context and '"debts": "780000.5"' in wire_context
+    )
+    result = reply["result"]
+    md = result["documents"]["markdown"]["content"]
+    assert (
+        "| Family Home | SGD | 1,250,000.00 | 2026-09-30 | 780,000.50 | "
+        "2026-09-15 | 469,999.50 |" in md
+    )
+    home = result["model"]["portfolios"][0]
+    sgd = next(t for t in home["totals"] if t["currency"] == "SGD")
+    assert (sgd["assets"], sgd["liabilities"], sgd["net_worth"]) == (
+        "1250000",
+        "780000.5",
+        "469999.5",
+    )
+    assert result["model"]["data_status"] == "complete"
+    assert fx.SGD not in json.dumps(reply)  # ids never shown, only codes
+
+
+def test_exact_amounts_of_1e30_size_survive_the_process_and_the_pipe() -> None:
+    big = "999999999999999999999999999999"
+    context = fx.ctx(fx.names(("a", "A")), fx.totals(a={fx.USD: (big, "0.01")}))
+    (reply,) = run_sidecar(context, {"function": "report", "args": {"lang": "en"}})
+    (t,) = reply["result"]["model"]["portfolios"][0]["totals"]
+    assert (t["assets"], t["liabilities"]) == (big, "0.01")
+    assert t["net_worth"] == "999999999999999999999999999998.99"
+    assert (
+        "999,999,999,999,999,999,999,999,999,998.99"
+        in (reply["result"]["documents"]["markdown"]["content"])
+    )
+
+
+def test_malformed_rows_are_dropped_in_the_process_and_never_crash_it() -> None:
+    good = fx.split_row(fx.SGD, "7", "3")
+    bad = [
+        {**fx.split_row(fx.USD, "5", "0"), "assets": 5.5},
+        {**fx.split_row(fx.USD, "5", "0"), "debts": "-1"},
+        {**fx.split_row(fx.USD, "5", "0"), "assets": "NaN"},
+        {**fx.split_row(fx.USD, "5", "0"), "assets_as_of": "<script>"},
+        {"currency_id": fx.USD, "assets": "5"},
+        "junk",
+        None,
+    ]
+    context = fx.ctx(
+        fx.names(("a", "A")),
+        {"portfolios": [{"id": "a", "totals": [*bad, good]}]},
+    )
+    (reply,) = run_sidecar(context, {"function": "report", "args": {"lang": "en"}})
+    assert "error" not in reply
+    (t,) = reply["result"]["model"]["portfolios"][0]["totals"]
+    assert (t["currency"], t["net_worth"]) == ("SGD", "4")
+    assert {"code": "skipped", "n": 7} in reply["result"]["model"]["notes"]
+    assert "<script>" not in json.dumps(reply)
+
+
+def test_older_host_withheld_amounts_never_cross_the_pipe() -> None:
+    # An older host (combined `total` only): the mortgaged home's SGD 1,250,000 /
+    # CNY 480,000.5 and the unclassified business's USD 48,000 must not reach the
+    # WebView in any form.
+    (reply,) = run_sidecar(fx.LEGACY, {"function": "report", "args": {"lang": "en"}})
+    assert reply["result"]["data_status"] == "partial"
     wire = json.dumps(reply)
     for amount in ("1250000", "1,250,000", "480000", "480,000", "48000.0", "48,000"):
         assert amount not in wire, amount
-    assert fx.SGD not in wire and fx.USD not in wire  # ids never shown, only codes
+    md = reply["result"]["documents"]["markdown"]["content"]
+    assert "| Family Home | CNY, SGD | Not shown (includes liabilities) |" in md
+    assert "| Investments | SGD | 98,000.00 | Not provided |" in md
 
 
 def test_sidecar_handles_a_denied_context_and_repeat_calls() -> None:

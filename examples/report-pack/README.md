@@ -9,7 +9,8 @@ This is the first plugin of the HelloHQ plugin roadmap (wave 1). It is
 **information, never advice**: it shows what is recorded and says so; it never
 recommends a transaction or an action.
 
-> **Status:** an Official first-party plugin, `com.hellohq.report-pack`, built
+> **Status:** an Official first-party plugin, `com.hellohq.report-pack` (1.1.0:
+> assets, liabilities and net worth from the host's split totals), built
 > and released from this directory (tag `report-pack-v<semver>`) and published
 > with `hqplugin publish --first-party`. Plugins are not in a shipped app release
 > yet. Read the [Known gaps](#known-gaps) before relying on the report.
@@ -22,37 +23,73 @@ recommends a transaction or an action.
 ## What the report contains
 
 1. **Summary** — portfolio counts, the number of currencies, and the combined
-   **total assets per currency** of the portfolios whose amounts are shown.
-2. **Total assets by portfolio** — one row per portfolio and currency, or one
-   row saying why a portfolio's amount is not shown.
+   **total assets, total liabilities and net worth per currency** of the
+   portfolios whose amounts are shown.
+2. **Assets, liabilities and net worth by portfolio** — one row per portfolio
+   and currency: total assets with its as-of date, total liabilities with its
+   as-of date, and net worth. A portfolio with no amount shows one row saying
+   why.
 3. **Currency exposure** — which currencies the recorded values are in and
    which portfolios have values in each (no amounts, no percentages).
-4. **Notes and disclaimer** — what the figures are and are not, what "read at"
-   means, rounding, anything missing, withheld or skipped, and the disclaimer.
+4. **Notes and disclaimer** — what the figures are and are not, what "as of"
+   and "read at" mean, rounding, anything missing, withheld or skipped, and the
+   disclaimer.
 
-### Why some amounts are withheld
+### Assets, liabilities and net worth
 
-The host's `read:aggregated_values` gives one number per portfolio and
-currency: the sum of the latest recorded value of **every** item in the
-portfolio (`PluginDataAccessObject.readAggregatedValues` in the app).
-Liabilities are stored as positive amounts and the app subtracts them for net
-worth (`overview_networth_total_value.dart`), but the plugin total adds them
-in. A portfolio holding a home and its mortgage would show home + mortgage — a
-figure that overstates wealth.
+The host's `read:aggregated_values` gives, per portfolio and currency, one
+`totals` row (`PluginDataAccessObject.readAggregatedValues` in the app;
+docs/plugin/04 `read:aggregated_values`):
 
-So the report asks `read:asset_count` how many asset and liability items each
-portfolio has, and:
-
-| Portfolio | Shown as |
+| Field | Meaning |
 |---|---|
-| No liability items | its totals, labelled **total assets** (总资产) |
+| `currency_id` | The workspace currency row id (resolved to a code, see [Currencies](#currencies)). |
+| `assets` | Exact decimal **string**: the sum of the asset-sheet items in that currency. |
+| `debts` | Exact decimal string: the sum of the debt-sheet items, as the **positive** amounts they are recorded as. Never subtracted from or added to `assets`. |
+| `assets_as_of`, `debts_as_of` | ISO-8601 UTC date of the latest value in that sum; `null` when no item of that kind counts. |
+| `total` | Deprecated and inexact: `assets + debts` as a double. The plugin ignores it for a row that has `assets`/`debts`. |
+
+The host's totals already leave out what the app's own totals leave out: items
+hidden by import or bank-merge review, legacy `crypto` items, and values dated
+after today.
+
+The report shows, for each portfolio and currency, **total assets**, **total
+liabilities** and **net worth** (`assets − debts`, computed exactly with
+`decimal`, within that one currency), each amount with its as-of date. A
+liability side with no items shows "No items" instead of a date. Net worth is
+never worked out across currencies, and a combined figure is per currency only:
+the sum of the shown portfolios' assets, of their liabilities, and the net worth
+of those two sums. No portfolio is withheld merely because it has liabilities.
+
+A row is **rejected** (left out and counted in a note, never shown) when it is
+not a plain object, has an unreadable `currency_id`, has `assets` or `debts`
+that is not an exact plain decimal string (a JSON number, an exponent, `NaN`,
+`Infinity`, a sign other than `-`, spaces, non-ASCII digits, 65+ characters or
+10^31 and above), has a negative `debts`, has only one of `assets`/`debts`, has
+an as-of that is not an ISO date or date-time (or is missing), or has a non-zero
+amount whose as-of is `null`. A negative `assets` total (an overdrawn account)
+is shown as recorded, as in 1.0.0.
+
+### Older hosts: the combined `total` only (fallback)
+
+An older app sends only `currency_id` and `total`, which **adds debts to
+assets** (a home and its mortgage would show home + mortgage, overstating
+wealth). For a row without `assets`/`debts` the 1.0.0 behaviour is kept for that
+row, using `read:asset_count`:
+
+| Portfolio (older host) | Shown as |
+|---|---|
+| No liability items | its total as **total assets**, liabilities 0 ("No items"), net worth equal to it, as-of "Not provided" |
 | One or more liability items | "Not shown (includes liabilities)" — amount withheld |
 | No item counts available | "Not shown (assets and liabilities unknown)" — amount withheld |
-| Totals entry with no values | "No recorded values" |
-| No totals entry | "Not available" |
 
-Withheld amounts never enter the model, the documents or the reply to the UI.
-Net worth (净资产) is never shown; the notes say so.
+Withheld amounts never enter the model, the documents or the reply to the UI,
+and a note says why (an older HelloHQ version gives only a combined total). The
+double-precision note applies to these rows only (a double is inexact from 2^53
+minor units). If one currency appears in both shapes in one portfolio, the exact
+split wins and the combined row is dropped and counted. Other table cases, in
+either host: "No recorded values" (a totals entry with no rows), "Could not be
+read" (every row rejected) and "Not available" (no totals entry).
 
 ### Rules the pack follows (roadmap §5.4)
 
@@ -60,14 +97,16 @@ Net worth (净资产) is never shown; the notes say so.
   disclaimer closes every report. Tests fail if recommendation words appear in
   any fixed string or rendered document of either language.
 - **Provenance on every figure.** Each figure shows its portfolio, its currency
-  and the time the workspace was read. Combined figures list the portfolios
-  they sum.
+  and the host's as-of date of the values in it; the report states the time the
+  workspace was read ("read at", UTC), which is the read time and never the date
+  of a value. Combined figures list the portfolios they sum.
 - **Currency is always explicit.** Amounts in different currencies are never
   added together or converted, so there is no cross-currency grand total and no
   percentage split between currencies. Currency rates are never read.
 - **Honest totals.** Nothing is estimated. Missing, withheld and unreadable
-  amounts say so. Negative totals are shown as recorded. Unreadable rows are
-  dropped and counted in a note.
+  amounts say so. Negative amounts, including a negative net worth, are shown
+  as recorded. Unreadable rows are dropped and counted in a note. Amounts are
+  exact decimal strings added with `decimal`, never floats.
 - **No network, no AI, no storage.**
 
 ### Currencies
@@ -83,10 +122,11 @@ cannot be identified is not shown, and a note counts it.
 
 ### Terminology (Simplified Chinese)
 
-总资产 (total assets), 负债 (liabilities), 净资产 (net worth — named only to say
-it is not shown), 币种 (currency), 读取时间 (read at), 投资组合 (portfolio — the
-term the app's own Chinese UI uses). A test checks the terms appear and that
-variants (货币, 币别, 资产净值, 总负债, 债务, 截至) do not. The string table
+总资产 (total assets), 负债 (liabilities), 净资产 (net worth), 截至 (as of), 币种
+(currency), 读取时间 (read at), 投资组合 (portfolio — the term the app's own
+Chinese UI uses). A test checks the terms appear, the amounts table header is
+`投资组合 | 币种 | 总资产 | 截至 | 负债 | 截至 | 净资产`, and that variants (货币,
+币别, 资产净值, 总负债, 债务, 截止) do not. The string table
 lives in `report_pack.py` (`STRINGS`); a test keeps the two languages in
 key-and-placeholder lockstep. Traditional Chinese (`zh-Hant`, `zh-TW`, `zh-HK`)
 is rejected with `invalid_input` rather than silently served as Simplified;
@@ -99,15 +139,17 @@ Declared in `manifest.json`, each with a `reason` shown at install review:
 | Permission | Tier | Why |
 |---|---|---|
 | `read:portfolio_names` | Community | Portfolio names for the report. |
-| `read:asset_count` | Community | Asset vs liability item counts, so a total that mixes them is not shown as assets. |
+| `read:asset_count` | Community | Only for an older HelloHQ that sends one combined total: the item counts tell a portfolio with liabilities apart, so its mixed total is not shown as assets. Never read for a row with `assets`/`debts`. |
 | `read:currency_rates` | Community | The workspace currency list, to show each total's currency code. The rates are never read; nothing is converted. |
-| `read:aggregated_values` | **Verified** | The per-portfolio, per-currency totals. |
+| `read:aggregated_values` | **Verified** | The per-portfolio, per-currency assets and liabilities. |
 | `write:external_output` | **Verified** | The UI saves the report through the OS save dialog; the plugin never learns the path. |
 
 `execution_mode: sidecar` and `ui_type: webview` are Verified-only too, so the
 plugin needs the **Verified** tier. `trust_tier` is not in the manifest: the
-registry team sets it at merge (docs/plugin/03). Deliberately **not**
-requested: `network:fetch`, `ai:inference`, `plugin:storage`,
+registry team sets it at merge (docs/plugin/03). `read:asset_count`
+is kept, not dropped, because the older-host fallback needs it (and an update
+from 1.0.0 then asks for no new approval); once every supported host sends the
+split it can be removed. Deliberately **not** requested: `network:fetch`, `ai:inference`, `plugin:storage`,
 `read:sheet_structure`. The plugin sees no individual item, balance history or
 account identifier. Tests pin the permission list, check every context key
 `report_pack.py` reads is declared, and check it imports nothing that can
@@ -154,7 +196,10 @@ simply absent and the report says so. The shapes (`PluginDataAccessObject`):
 "read:portfolio_names":   [{"id": "...", "name": "..."}]
 "read:asset_count":       {"portfolios": [{"id": "...", "asset_items": 3, "debt_items": 1, "total_items": 4}]}
 "read:currency_rates":    [{"id": "<row id>", "name": "USD", "symbol": "$", "rate": 1000000}]
-"read:aggregated_values": {"portfolios": [{"id": "...", "totals": [{"currency_id": "<row id>", "total": 1.5}]}]}
+"read:aggregated_values": {"portfolios": [{"id": "...", "totals": [{"currency_id": "<row id>",
+                           "assets": "503834.66", "debts": "300000",
+                           "assets_as_of": "2026-04-10T00:00:00.000Z",
+                           "debts_as_of": "2026-03-15T00:00:00.000Z", "total": 803834.66}]}]}
 ```
 
 `compute` args must be strings, numbers, booleans or flat arrays of them (the
@@ -164,8 +209,10 @@ language string. The preview uses `textContent`, never `innerHTML`.
 ### Inside `report_pack.py`
 
 1. `build_report(context, now)` → a language-neutral **model** (amounts as exact
-   decimal strings, notes as codes). Amounts come from `Decimal(repr(float))`,
-   so no binary-float noise reaches a figure; sums are exact (80-digit context).
+   decimal strings, notes as codes). `assets`/`debts` are parsed from their
+   strings with `Decimal` (never through a float); only the older host's combined
+   `total` goes through `Decimal(repr(float))`. Sums and net worth are exact
+   (80-digit context).
 2. `build_blocks(model, lang)` → a small document IR (headings, paragraphs,
    lists, tables) using the string table.
 3. `render_markdown` / `render_text` / `render_html` → the saved files.
@@ -177,7 +224,7 @@ cannot add table columns, a link or an autolink); HTML is escaped, carries a
 80 characters are shortened with an ellipsis in the documents (the model keeps
 the full name, and a note says so). Amounts are rounded half to even to each
 currency's usual decimals (0 for JPY/KRW, 3 for KWD, …), exact up to 10^31;
-combined totals are summed before rounding.
+net worth and combined totals are computed before rounding.
 
 ## Build
 
@@ -201,7 +248,7 @@ Requirements: Node 20+ and npm, Python 3.11+, `zip`.
 ```bash
 cd examples/report-pack
 ./build.sh                                  # so tests/test_build.py can check ui.zip
-uv run --no-project --with pytest --with pytest-cov pytest --cov=report_pack --cov-report=term-missing
+REPORT_PACK_REQUIRE_BUILD=1 uv run --no-project --with pytest --with pytest-cov pytest --cov=report_pack --cov-report=term-missing
 uvx ruff@0.16.8 check report_pack.py bundle.py tests && uvx ruff@0.16.8 format --check report_pack.py bundle.py tests
 (cd ../../sdks/js && npm test)              # HQHost against the app's HQBridge shim
 ```
@@ -210,15 +257,19 @@ CI runs all of this in the `Report Pack example` job, plus the sidecar through
 `hqplugin test --sidecar` on Linux, macOS and Windows.
 
 - `tests/test_report.py` — model, both languages, three renderers; golden
-  outputs in `tests/golden/` for eight scenarios (a family with a mortgaged
-  home, all debt-free, all with liabilities, zero portfolios, missing totals,
-  partial totals, negative totals, hostile names) and edge cases: currency id
-  resolution (built-in UUIDs, user rows, import rows, unknown ids), withheld
-  amounts never leaking, malformed counts, many currencies, 0- and 3-decimal
-  currencies, half-even rounding, 10^30-sized sums, the double-precision note,
-  NaN/inf/bool/garbage rows, duplicate ids, language selection, and names that
-  are very long, empty, multi-line, bidi-spoofed or full of Markdown/HTML.
-  Regenerate goldens after an intentional wording change with
+  outputs in `tests/golden/` for ten scenarios (a family with a mortgaged home,
+  all debt-free, every portfolio with liabilities, zero portfolios, missing
+  totals, partial totals, negative assets and negative net worth, hostile names,
+  and two older-host scenarios) and edge cases: currency id resolution
+  (built-in UUIDs, user rows, import rows, unknown ids), assets, liabilities and
+  net worth within one currency and never across currencies, as-of dates (null on
+  one side, offsets, the latest of several rows), 0- and 3-decimal currencies,
+  half-even rounding, 10^30-sized exact sums, ~60 malformed-row cases (non-decimal
+  strings, numbers, NaN/inf/bool, negative debts, one side missing, bad dates),
+  the older-host fallback (liabilities, unknown counts, malformed counts, mixed
+  shapes, the double-precision note), duplicate ids, language selection, and
+  names that are very long, empty, multi-line, bidi-spoofed or full of
+  Markdown/HTML. Regenerate goldens after an intentional wording change with
   `UPDATE_GOLDEN=1 pytest` and review the diff.
 - `tests/test_bundle.py` — the bundle imports only the standard library, is
   reproducible, keeps the line separators the source holds inside string
@@ -226,8 +277,9 @@ CI runs all of this in the `Report Pack example` job, plus the sidecar through
 - `tests/test_sidecar_e2e.py` — runs the bundled `plugin.py` as the real sidecar
   process, the way the app does (`python -I`, empty environment), over the NDJSON
   protocol the host speaks (ready → `run` RPC → shutdown), with
-  host-shaped context, in both languages, plus withheld-amount, denied-context,
-  repeat-call and error-envelope cases.
+  host-shaped context (the split `assets`/`debts` payload), in both languages,
+  plus exact 10^30-sized amounts, malformed rows, older-host withheld amounts,
+  denied-context, repeat-call and error-envelope cases.
 - `tests/test_manifest.py` — permission set and reasons, Official tier, icon rules, manifest
   shape vs. the sibling example, and the no-network / no-AI import guard.
 - `tests/test_build.py` — the built `ui.zip`: expected files, entrypoint,
@@ -250,28 +302,30 @@ Read these before relying on the report.
    on 2026-10-17: install, per-workspace approval, the WebView page, the report in
    English and Chinese, and the save dialog all worked. Only an empty workspace was
    seen in the app (the demo workspace could not be loaded; see
-   HelloHQ/hellohq#476), so a report with figures rests on the tests.
-2. **Totals mix assets and liabilities.** See
-   [Why some amounts are withheld](#why-some-amounts-are-withheld). Many
-   families hold a mortgage, so many reports will show few amounts. Fix in the
-   host: return totals split by sheet type; the report could then show total
-   assets, liabilities and net worth.
-3. **The plugin total can differ from the app's, even for a debt-free
-   portfolio.** The host sums every value-history row of the portfolio, while
-   the app's own totals leave out legacy `crypto` items and items suppressed
-   by import or account-merge review (`sync_conflict_suppressed`,
-   `bank_merge_suppressed`), and count only items under a sheet and section.
-   So a merged bank account can be counted twice. The report says figures may
-   differ from the app. Fix in the host (inferred from the app code, not
-   reproduced against a real workspace).
-4. **"Read at" is the read time.** The host does not expose a date for the
-   values inside a total, so each figure carries the moment the report read
-   the workspace (UTC), and the report says a total can include values
-   recorded long before. A report cannot honestly say "as at 31 March".
-5. **Totals cross the host boundary as doubles.** The host sums exactly, then
-   converts to a JSON number. At or above 2^53 minor units (about 90 trillion
-   for a two-decimal currency) the last digits may be inexact; the report adds
-   a note when an amount is that large.
+   HelloHQ/hellohq#476), so a report with figures rests on the tests. That run
+   was 1.0.0; 1.1.0 (the split totals) has not been run in the app.
+2. **Totals mix assets and liabilities (resolved for hosts that return the
+   split).** The host now returns `assets` and `debts` separately, so the report
+   shows total assets, total liabilities and net worth and withholds nothing for
+   having liabilities. Only an older host that sends the combined `total` still
+   gets the 1.0.0 fallback (withheld for liabilities or unknown counts; see
+   [Older hosts](#older-hosts-the-combined-total-only-fallback)). Which app
+   versions send the split was not checked against a release; the rule is per
+   row, so no version needs to be known.
+3. **The plugin total can differ from the app's (resolved).** The host's totals
+   now count what the app's own asset and debt totals count (items hidden by
+   import or bank-merge review, legacy `crypto` and values dated after today are
+   left out). The app still converts every currency into one, so its single
+   figure differs from the per-currency figures here, and a note says so. An older
+   host's combined total keeps the old discrepancy.
+4. **"Read at" is the read time (resolved by as-of dates).** Each total now has
+   the host's `assets_as_of` / `debts_as_of`, the date of the latest value in it
+   (other values in it can be older). The report shows these as "As of"; "read
+   at" stays the read time. An older host gives no date, shown as "Not provided".
+5. **Totals cross the host boundary as doubles (resolved).** `assets` and `debts`
+   are exact decimal strings, parsed without floats and summed exactly. Only an
+   older host's combined `total` is a double; its large values keep the
+   last-digits note.
 6. **Currencies.** The built-in currency ids are copied from the app. A
    user-created currency whose name and symbol are not code-shaped (2–8 Latin
    letters) cannot be identified and is not shown. Codes the app treats as

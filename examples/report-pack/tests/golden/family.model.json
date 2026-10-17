@@ -1,7 +1,7 @@
 {
-  "schema": "hellohq.report-pack/2",
+  "schema": "hellohq.report-pack/3",
   "generated_at": "2026-10-04T12:00:30Z",
-  "data_status": "partial",
+  "data_status": "complete",
   "portfolios": [
     {
       "id": "ptf_home",
@@ -12,13 +12,33 @@
         "CNY",
         "SGD"
       ],
-      "totals": [],
-      "totals_status": "liabilities"
+      "totals": [
+        {
+          "currency": "CNY",
+          "source": "split",
+          "assets": "480000.5",
+          "liabilities": "0",
+          "net_worth": "480000.5",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": null
+        },
+        {
+          "currency": "SGD",
+          "source": "split",
+          "assets": "1250000",
+          "liabilities": "780000.5",
+          "net_worth": "469999.5",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": "2026-09-15"
+        }
+      ],
+      "withheld": null,
+      "totals_status": "shown"
     },
     {
       "id": "ptf_invest",
       "name": "Investments",
-      "asset_items": 5,
+      "asset_items": 3,
       "liability_items": 0,
       "currencies": [
         "JPY",
@@ -28,29 +48,56 @@
       "totals": [
         {
           "currency": "JPY",
-          "amount": "3500000"
+          "source": "split",
+          "assets": "3500000",
+          "liabilities": "0",
+          "net_worth": "3500000",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": null
         },
         {
           "currency": "SGD",
-          "amount": "98000.0"
+          "source": "split",
+          "assets": "98000",
+          "liabilities": "0",
+          "net_worth": "98000",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": null
         },
         {
           "currency": "USD",
-          "amount": "215340.126"
+          "source": "split",
+          "assets": "215340.126",
+          "liabilities": "0",
+          "net_worth": "215340.126",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": null
         }
       ],
+      "withheld": null,
       "totals_status": "shown"
     },
     {
       "id": "ptf_biz",
       "name": "Chen & Sons Trading",
-      "asset_items": null,
-      "liability_items": null,
+      "asset_items": 1,
+      "liability_items": 1,
       "currencies": [
         "USD"
       ],
-      "totals": [],
-      "totals_status": "unclassified"
+      "totals": [
+        {
+          "currency": "USD",
+          "source": "split",
+          "assets": "48000",
+          "liabilities": "12500.75",
+          "net_worth": "35499.25",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": "2026-09-15"
+        }
+      ],
+      "withheld": null,
+      "totals_status": "shown"
     },
     {
       "id": "ptf_cash",
@@ -64,13 +111,24 @@
       "totals": [
         {
           "currency": "SGD",
-          "amount": "42000.0"
+          "source": "split",
+          "assets": "42000",
+          "liabilities": "0",
+          "net_worth": "42000",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": null
         },
         {
           "currency": "USD",
-          "amount": "1500.25"
+          "source": "split",
+          "assets": "1500.25",
+          "liabilities": "0",
+          "net_worth": "1500.25",
+          "assets_as_of": "2026-09-30",
+          "liabilities_as_of": null
         }
       ],
+      "withheld": null,
       "totals_status": "shown"
     },
     {
@@ -80,19 +138,35 @@
       "liability_items": 0,
       "currencies": [],
       "totals": [],
+      "withheld": null,
       "totals_status": "empty"
     }
   ],
   "summary": {
     "portfolio_count": 5,
-    "portfolios_with_totals": 2,
-    "portfolios_withheld": 2,
+    "portfolios_with_totals": 4,
+    "portfolios_withheld": 0,
     "currency_count": 4
   },
   "combined_totals": [
     {
+      "currency": "CNY",
+      "total_assets": "480000.5",
+      "total_liabilities": "0",
+      "net_worth": "480000.5",
+      "portfolio_count": 1,
+      "portfolios": [
+        {
+          "id": "ptf_home",
+          "name": "Family Home"
+        }
+      ]
+    },
+    {
       "currency": "JPY",
       "total_assets": "3500000",
+      "total_liabilities": "0",
+      "net_worth": "3500000",
       "portfolio_count": 1,
       "portfolios": [
         {
@@ -103,9 +177,15 @@
     },
     {
       "currency": "SGD",
-      "total_assets": "140000.0",
-      "portfolio_count": 2,
+      "total_assets": "1390000",
+      "total_liabilities": "780000.5",
+      "net_worth": "609999.5",
+      "portfolio_count": 3,
       "portfolios": [
+        {
+          "id": "ptf_home",
+          "name": "Family Home"
+        },
         {
           "id": "ptf_invest",
           "name": "Investments"
@@ -118,12 +198,18 @@
     },
     {
       "currency": "USD",
-      "total_assets": "216840.376",
-      "portfolio_count": 2,
+      "total_assets": "264840.376",
+      "total_liabilities": "12500.75",
+      "net_worth": "252339.626",
+      "portfolio_count": 3,
       "portfolios": [
         {
           "id": "ptf_invest",
           "name": "Investments"
+        },
+        {
+          "id": "ptf_biz",
+          "name": "Chen & Sons Trading"
         },
         {
           "id": "ptf_cash",
@@ -195,6 +281,9 @@
       "code": "basis"
     },
     {
+      "code": "networth"
+    },
+    {
       "code": "app_differs"
     },
     {
@@ -205,14 +294,6 @@
     },
     {
       "code": "rounding"
-    },
-    {
-      "code": "liabilities",
-      "n": 1
-    },
-    {
-      "code": "unclassified",
-      "n": 1
     }
   ]
 }

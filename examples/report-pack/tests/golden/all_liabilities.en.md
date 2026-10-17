@@ -2,24 +2,26 @@
 
 Portfolio figures recorded in HelloHQ
 
-Prepared 2026-10-04 12:00 UTC. Source: your HelloHQ workspace (portfolio names, item counts, currencies and per-portfolio totals).
+Prepared 2026-10-04 12:00 UTC. Source: your HelloHQ workspace (portfolio names, currencies and per-portfolio totals of assets and liabilities).
 
 ## Summary
 
 - Portfolios included: 2.
-- Portfolios with total assets shown: 0 of 2.
+- Portfolios with amounts shown: 2 of 2.
 - Currencies in the recorded values: 1.
 
-No amounts are shown: every portfolio with recorded values includes liabilities or could not be classified (see the notes). Nothing has been estimated.
+Combined by currency, for the portfolios whose amounts are shown (amounts in different currencies are never added together or converted):
 
-## Total assets by portfolio
+- SGD: total assets 1,545,000.00; total liabilities 930,000.25; net worth 614,999.75. Sum of 2 portfolios (Home, Car). Read at 2026-10-04 12:00 UTC.
 
-One row per portfolio and currency where an amount is shown. Source: HelloHQ workspace. “Read at” is the time this report read your workspace.
+## Assets, liabilities and net worth by portfolio
 
-| Portfolio | Currency | Total assets | Read at (UTC) |
-| --- | --- | ---: | --- |
-| Home | SGD | Not shown (includes liabilities) | 2026-10-04 12:00 |
-| Car | SGD | Not shown (includes liabilities) | 2026-10-04 12:00 |
+One row per portfolio and currency where amounts are shown. Source: HelloHQ workspace. “As of” is the date of the latest value in that total, as given by HelloHQ. This report read your workspace at 2026-10-04 12:00 UTC.
+
+| Portfolio | Currency | Total assets | As of | Total liabilities | As of | Net worth |
+| --- | --- | ---: | --- | ---: | --- | ---: |
+| Home | SGD | 1,500,000.00 | 2026-09-30 | 900,000.00 | 2026-09-15 | 600,000.00 |
+| Car | SGD | 45,000.00 | 2026-09-30 | 30,000.25 | 2026-09-15 | 14,999.75 |
 
 ## Currency exposure
 
@@ -31,11 +33,11 @@ Which currencies the recorded values are in, and which portfolios have values in
 
 ## Notes and disclaimer
 
-- HelloHQ gives plugins one total per portfolio and currency: the sum of the latest recorded value of every item, with assets and liabilities added together. This report therefore shows amounts only for portfolios with no liabilities recorded, where that total is the portfolio's total assets. It does not show net worth.
-- Figures may differ from the totals in the HelloHQ app, which converts every currency into one and applies its own rules for which items count.
-- “Read at” is the time this report read your workspace (UTC). Each value inside a total was recorded on its own date, which plugins cannot see, so a total can include values recorded long before this time.
+- Each total is the sum of the latest recorded value of every item HelloHQ counts for that portfolio and currency. Liabilities are recorded as positive amounts; this report never adds them to assets.
+- Net worth is total assets minus total liabilities, worked out only within one currency. It is never worked out across currencies, which are not added together or converted.
+- Figures may differ from the totals in the HelloHQ app, which converts every currency into one.
+- “As of” is the date of the latest value in that total, as given by HelloHQ; other values in it may be older. “No items” means no item of that kind is counted. “Read at” is the time this report read your workspace (UTC), not the date of any value.
 - Currencies are shown as recorded. Amounts in different currencies are not added together or converted.
 - Amounts are rounded half to even to the usual number of decimal places of each currency for display. Combined totals are added before rounding, so rounded rows may not add up exactly to them.
-- The amounts of 2 portfolios are not shown because they include liabilities. HelloHQ does not yet give plugins assets and liabilities separately, and the combined figure would overstate wealth.
 
 Disclaimer: this report is for information only. It is not financial, investment, tax or legal advice and does not recommend any action. Figures are the values recorded in your HelloHQ workspace and have not been independently verified.

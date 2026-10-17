@@ -1,8 +1,8 @@
 """Report Pack — Tier-1 Python sidecar (compute half of a WebView plugin)
 =========================================================================
-Turns what the host lets a plugin read (portfolio names, item counts, the
-workspace currency list and per-portfolio totals) into a short "family
-meeting" report in English or Simplified Chinese (``en`` / ``zh-Hans``). The
+Turns what the host lets a plugin read (portfolio names, the workspace
+currency list and per-portfolio totals of assets and liabilities) into a short
+"family meeting" report in English or Simplified Chinese (``en`` / ``zh-Hans``). The
 WebView half (``ui/``) previews the report and saves it through
 ``write:external_output`` (the OS save dialog) — a Tier-1 sidecar has no write
 path of its own, so the save is always a UI action.
@@ -16,17 +16,28 @@ The compute is split in three pure steps, each unit-tested:
 3. ``render_markdown`` / ``render_text`` / ``render_html``  -> the three file
    formats the person can save.
 
-What the host's totals are, and why most amounts can be withheld
-------------------------------------------------------------------
-``read:aggregated_values`` gives one number per portfolio and currency: the sum
-of the latest recorded value of *every* item in the portfolio
-(``PluginDataAccessObject.readAggregatedValues`` in the app). Liabilities are
-stored as positive amounts and the app subtracts them for net worth
-(``overview_networth_total_value.dart``), but the plugin total adds them in. A
-portfolio holding a home and its mortgage would therefore show home + mortgage
-— a figure that overstates wealth. So this report shows an amount only when
-``read:asset_count`` says the portfolio has **no** liability items (then the
-total is its total assets) and withholds it otherwise, saying why.
+What the host's totals are
+--------------------------
+``read:aggregated_values`` gives, per portfolio and currency, one ``totals`` row
+(``PluginDataAccessObject.readAggregatedValues`` in the app)::
+
+    {"currency_id": "<row id>", "assets": "503834.66", "debts": "300000",
+     "assets_as_of": "2026-04-10T00:00:00.000Z",
+     "debts_as_of": "2026-03-15T00:00:00.000Z", "total": 803834.66}
+
+``assets`` and ``debts`` are exact decimal strings (debts are the positive
+amounts they are recorded as, never subtracted from or added to assets); the
+``*_as_of`` fields are the latest value date in that total, or null when no
+item of that kind counts. The totals already leave out what the app's own
+totals leave out. ``total`` is deprecated and inexact (assets + debts as a
+double). This report shows total assets, total liabilities and net worth
+(assets - debts, computed exactly within ONE currency) with their as-of dates.
+
+Older hosts send only ``currency_id`` and ``total``, which adds debts to
+assets. For such a row (no ``assets``/``debts``) the 1.0.0 behaviour is kept:
+``read:asset_count`` says whether the portfolio has liability items; the amount
+is shown (as total assets, date unknown) only when it has none, and withheld
+otherwise or when that cannot be told, saying why.
 
 Currency ids are not codes: the app keys currencies by a row id (a UUID for
 the nine built-in currencies). They are resolved to ISO-style codes the way
@@ -39,9 +50,9 @@ Rules this plugin follows (HelloHQ plugin roadmap §5.4)
 -------------------------------------------------------
 * Information, never advice: no recommendation language; a plain disclaimer is
   always included.
-* Provenance on every figure: the portfolio it belongs to, its currency and
-  the time the workspace was read. The host does not expose a per-value date,
-  and the report says so.
+* Provenance on every figure: the portfolio it belongs to, its currency, the
+  date of the latest value in it (as given by the host) and the time the
+  workspace was read ("read at" is the read time, never the date of a value).
 * Currency is always shown explicitly. Amounts in different currencies are
   never added together or converted.
 * Honest totals: nothing is estimated. A missing or withheld amount says so.
@@ -61,6 +72,9 @@ The host always calls ``run`` with
                                "rate": 1000000}]
     "read:aggregated_values": {"portfolios": [{"id": "...",
                                "totals": [{"currency_id": "<row id>",
+                                           "assets": "1.5", "debts": "0",
+                                           "assets_as_of": "2026-04-10T00:00:00.000Z",
+                                           "debts_as_of": null,
                                            "total": 1.5}]}]}
 
 Functions (invoked from the UI via ``host.compute(fn, args)``):
@@ -69,7 +83,8 @@ Functions (invoked from the UI via ``host.compute(fn, args)``):
 
 Permissions required:
   - read:portfolio_names      (portfolio names)
-  - read:asset_count          (asset vs liability item counts per portfolio)
+  - read:asset_count          (only for an older host that sends a combined
+                               ``total``: whether a portfolio has liabilities)
   - read:currency_rates       (currency codes; the rates are never used)
   - read:aggregated_values    (per-portfolio, per-currency totals)
   - write:external_output     (used by the UI half to save the report)
@@ -81,14 +96,14 @@ import html
 import math
 import re
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, InvalidOperation, localcontext
 from typing import Any
 
 from hellohq_plugin_sdk import PluginError, UnsupportedFunction, serve
 from hellohq_plugin_sdk.protocol import ERR_INVALID_INPUT
 
-SCHEMA = "hellohq.report-pack/2"
+SCHEMA = "hellohq.report-pack/3"
 DEFAULT_LANG = "en"
 SUPPORTED_LANGS = ("en", "zh-Hans")
 
@@ -103,9 +118,23 @@ MAX_NAME_CHARS = 80
 MAX_INLINE_NAMES = 5
 #: Amounts at or above 10**31 are treated as unreadable rather than rendered.
 _MAX_ADJUSTED_EXPONENT = 30
-#: The host sends totals as JSON numbers (IEEE doubles). At or above 2**53 minor
-#: units a double cannot hold every value, so the last digits may be inexact.
+#: An exact amount string longer than this is unreadable: it keeps every sum
+#: within the 80-digit decimal context below exact.
+_MAX_AMOUNT_CHARS = 64
+#: An older host sends the combined ``total`` as a JSON number (an IEEE double).
+#: At or above 2**53 minor units a double cannot hold every value, so the last
+#: digits may be inexact. Exact ``assets``/``debts`` strings have no such limit.
 _DOUBLE_EXACT_LIMIT = Decimal(2**53)
+#: An exact amount as the host writes it: plain digits, optional sign and
+#: fraction. No exponent, no whitespace, no "NaN"/"Infinity", ASCII digits only.
+_PLAIN_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?", re.ASCII)
+#: An ISO-8601 date, or a date-time with optional zone, as the host writes it.
+_ISO_DATE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    r"(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?(?:Z|[+-][0-9]{2}:[0-9]{2})?)?",
+    re.ASCII,
+)
+_MAX_DATE_CHARS = 40
 
 # Currencies whose usual number of decimal places is not two (ISO 4217).
 _ZERO_DECIMAL = frozenset(
@@ -139,6 +168,9 @@ _ISO_SHAPED_ID = re.compile(r"[A-Za-z]{3}")
 # up to 10**31 is exact (the default 28 digits would round silently).
 _DECIMAL_CONTEXT = Context(prec=80)
 
+#: Marks a field the host did not send at all (as opposed to an explicit null).
+_ABSENT = object()
+
 _EM_DASH = "—"
 _ELLIPSIS = "…"
 # Bidirectional override / isolate controls: strip so a name cannot reorder the
@@ -151,10 +183,10 @@ _BIDI_CONTROLS = dict.fromkeys(
 # String table (en, zh-Hans). Every key exists in both languages; a unit test
 # keeps the key sets and the {placeholders} identical.
 #
-# Terminology (zh-Hans): 总资产 total assets, 负债 liabilities, 净资产 net worth
-# (named only to say it is not shown), 币种 currency, 读取时间 read at,
-# 投资组合 portfolio (the term the app itself uses). The Chinese copy has not
-# been reviewed by a native finance reader yet (see README, known gaps).
+# Terminology (zh-Hans): 总资产 total assets, 负债 liabilities, 净资产 net worth,
+# 币种 currency, 读取时间 read at, 投资组合 portfolio (the term the app itself
+# uses), 截至 as of. The Chinese copy has not been reviewed by a native finance
+# reader yet (see README, known gaps).
 # Keys ending in _one/_other are the singular/plural forms (English only varies).
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -164,23 +196,27 @@ STRINGS: dict[str, dict[str, str]] = {
         "doc_subtitle": "Portfolio figures recorded in HelloHQ",
         "prepared": (
             "Prepared {asof} UTC. Source: your HelloHQ workspace (portfolio "
-            "names, item counts, currencies and per-portfolio totals)."
+            "names, currencies and per-portfolio totals of assets and "
+            "liabilities)."
         ),
         "h_summary": "Summary",
         "sum_portfolios": "Portfolios included: {n}.",
-        "sum_with_totals": "Portfolios with total assets shown: {n} of {m}.",
+        "sum_with_totals": "Portfolios with amounts shown: {n} of {m}.",
         "sum_currencies": "Currencies in the recorded values: {n}.",
         "sum_combined_intro": (
-            "Combined total assets by currency, for portfolios with no recorded "
-            "liabilities (amounts in different currencies are never added "
-            "together or converted):"
+            "Combined by currency, for the portfolios whose amounts are shown "
+            "(amounts in different currencies are never added together or "
+            "converted):"
         ),
         "sum_combined_item_one": (
-            "{currency} {amount}: {count} portfolio ({names}). Read at {asof} UTC."
+            "{currency}: total assets {assets}; total liabilities "
+            "{liabilities}; net worth {net}. {count} portfolio ({names}). "
+            "Read at {asof} UTC."
         ),
         "sum_combined_item_other": (
-            "{currency} {amount}: sum of {count} portfolios ({names}). "
-            "Read at {asof} UTC."
+            "{currency}: total assets {assets}; total liabilities "
+            "{liabilities}; net worth {net}. Sum of {count} portfolios "
+            "({names}). Read at {asof} UTC."
         ),
         "sum_no_portfolios": (
             "No portfolios were available to this plugin. The workspace may be "
@@ -191,21 +227,27 @@ STRINGS: dict[str, dict[str, str]] = {
             "been estimated."
         ),
         "sum_withheld": (
-            "No amounts are shown: every portfolio with recorded values "
-            "includes liabilities or could not be classified (see the notes). "
-            "Nothing has been estimated."
+            "No amounts are shown: this HelloHQ version gives only combined "
+            "totals, and every portfolio with recorded values includes "
+            "liabilities or could not be classified (see the notes). Nothing "
+            "has been estimated."
         ),
-        "h_portfolios": "Total assets by portfolio",
+        "h_portfolios": "Assets, liabilities and net worth by portfolio",
         "portfolios_intro": (
-            "One row per portfolio and currency where an amount is shown. "
-            "Source: HelloHQ workspace. “Read at” is the time this report read "
-            "your workspace."
+            "One row per portfolio and currency where amounts are shown. "
+            "Source: HelloHQ workspace. “As of” is the date of the latest value "
+            "in that total, as given by HelloHQ. This report read your "
+            "workspace at {asof} UTC."
         ),
         "portfolios_none": "There are no portfolios to list.",
         "th_portfolio": "Portfolio",
         "th_currency": "Currency",
-        "th_total": "Total assets",
-        "th_asof": "Read at (UTC)",
+        "th_assets": "Total assets",
+        "th_liabilities": "Total liabilities",
+        "th_net": "Net worth",
+        "th_asof": "As of",
+        "asof_none": "No items",
+        "asof_unknown": "Not provided",
         "not_available": "Not available",
         "no_values": "No recorded values",
         "unreadable": "Could not be read",
@@ -223,22 +265,25 @@ STRINGS: dict[str, dict[str, str]] = {
         "th_exp_names": "Portfolio names",
         "h_notes": "Notes and disclaimer",
         "note_basis": (
-            "HelloHQ gives plugins one total per portfolio and currency: the sum "
-            "of the latest recorded value of every item, with assets and "
-            "liabilities added together. This report therefore shows amounts "
-            "only for portfolios with no liabilities recorded, where that total "
-            "is the portfolio's total assets. It does not show net worth."
+            "Each total is the sum of the latest recorded value of every item "
+            "HelloHQ counts for that portfolio and currency. Liabilities are "
+            "recorded as positive amounts; this report never adds them to "
+            "assets."
+        ),
+        "note_networth": (
+            "Net worth is total assets minus total liabilities, worked out "
+            "only within one currency. It is never worked out across "
+            "currencies, which are not added together or converted."
         ),
         "note_app_differs": (
             "Figures may differ from the totals in the HelloHQ app, which "
-            "converts every currency into one and applies its own rules for "
-            "which items count."
+            "converts every currency into one."
         ),
         "note_asof": (
-            "“Read at” is the time this report read your workspace (UTC). Each "
-            "value inside a total was recorded on its own date, which plugins "
-            "cannot see, so a total can include values recorded long before "
-            "this time."
+            "“As of” is the date of the latest value in that total, as given "
+            "by HelloHQ; other values in it may be older. “No items” means no "
+            "item of that kind is counted. “Read at” is the time this report "
+            "read your workspace (UTC), not the date of any value."
         ),
         "note_currency": (
             "Currencies are shown as recorded. Amounts in different currencies "
@@ -263,15 +308,15 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         "note_liabilities_one": (
             "The amounts of 1 portfolio are not shown because it includes "
-            "liabilities. HelloHQ does not yet give plugins assets and "
-            "liabilities separately, and the combined figure would overstate "
-            "wealth."
+            "liabilities and was read from an older HelloHQ version that gives "
+            "plugins only a combined total of assets and liabilities, which "
+            "would overstate wealth."
         ),
         "note_liabilities_other": (
             "The amounts of {n} portfolios are not shown because they include "
-            "liabilities. HelloHQ does not yet give plugins assets and "
-            "liabilities separately, and the combined figure would overstate "
-            "wealth."
+            "liabilities and were read from an older HelloHQ version that gives "
+            "plugins only a combined total of assets and liabilities, which "
+            "would overstate wealth."
         ),
         "note_unclassified_one": (
             "The amounts of 1 portfolio are not shown because no item counts "
@@ -283,10 +328,22 @@ STRINGS: dict[str, dict[str, str]] = {
             "counts were available for them, so this plugin cannot tell whether "
             "they include liabilities."
         ),
+        "note_legacy_one": (
+            "1 portfolio was read from an older HelloHQ version that gives "
+            "plugins only a combined total. It is shown as total assets because "
+            "it has no liabilities recorded; its dates are not available."
+        ),
+        "note_legacy_other": (
+            "{n} portfolios were read from an older HelloHQ version that gives "
+            "plugins only a combined total. They are shown as total assets "
+            "because they have no liabilities recorded; their dates are not "
+            "available."
+        ),
         "note_negative": "One or more amounts are negative and are shown as recorded.",
         "note_precision": (
-            "Some amounts are very large. HelloHQ passes totals to plugins as "
-            "floating-point numbers, so their last digits may be inexact."
+            "Some amounts read from an older HelloHQ version are very large. "
+            "That version passes totals as floating-point numbers, so their "
+            "last digits may be inexact."
         ),
         "note_skipped_one": "1 total entry could not be read and was left out.",
         "note_skipped_other": (
@@ -319,41 +376,46 @@ STRINGS: dict[str, dict[str, str]] = {
         "doc_subtitle": "HelloHQ 中记录的投资组合数据",
         "prepared": (
             "编制时间：{asof} UTC。数据来源：您的 HelloHQ 工作区"
-            "（投资组合名称、项目数量、币种及各投资组合合计）。"
+            "（投资组合名称、币种及各投资组合的资产与负债合计）。"
         ),
         "h_summary": "摘要",
         "sum_portfolios": "纳入的投资组合：{n} 个。",
-        "sum_with_totals": "显示总资产的投资组合：{n} 个（共 {m} 个）。",
+        "sum_with_totals": "显示金额的投资组合：{n} 个（共 {m} 个）。",
         "sum_currencies": "记录数值涉及的币种：{n} 种。",
         "sum_combined_intro": (
-            "按币种汇总的总资产，仅含未记录负债的投资组合"
-            "（不同币种的金额不会相加，也不做换算）："
+            "按币种汇总，涵盖显示金额的投资组合（不同币种的金额不会相加，也不做换算）："
         ),
         "sum_combined_item_one": (
-            "{currency} {amount}：{count} 个投资组合（{names}）。读取时间 {asof} UTC。"
+            "{currency}：总资产 {assets}；负债 {liabilities}；净资产 {net}。"
+            "{count} 个投资组合（{names}）。读取时间 {asof} UTC。"
         ),
         "sum_combined_item_other": (
-            "{currency} {amount}：{count} 个投资组合之和（{names}）。"
-            "读取时间 {asof} UTC。"
+            "{currency}：总资产 {assets}；负债 {liabilities}；净资产 {net}。"
+            "{count} 个投资组合之和（{names}）。读取时间 {asof} UTC。"
         ),
         "sum_no_portfolios": (
             "本插件未获取到任何投资组合。工作区可能为空，或未授予读取投资组合名称的权限。"
         ),
         "sum_no_totals": "没有可用的合计数据，因此不显示任何数字，也未作任何估算。",
         "sum_withheld": (
-            "未显示任何金额：所有有记录数值的投资组合均包含负债或无法分类"
-            "（见说明）。未作任何估算。"
+            "未显示任何金额：当前的 HelloHQ 版本只提供合并后的合计，且所有有记录数值的"
+            "投资组合均包含负债或无法分类（见说明）。未作任何估算。"
         ),
-        "h_portfolios": "各投资组合总资产",
+        "h_portfolios": "各投资组合的资产、负债与净资产",
         "portfolios_intro": (
             "显示金额的投资组合按币种各占一行。数据来源：HelloHQ 工作区。"
-            "“读取时间”为本报告读取您工作区数据的时间。"
+            "“截至”为 HelloHQ 提供的该合计中最新数值的日期。"
+            "本报告于 {asof} UTC 读取您的工作区数据。"
         ),
         "portfolios_none": "没有可列出的投资组合。",
         "th_portfolio": "投资组合",
         "th_currency": "币种",
-        "th_total": "总资产",
-        "th_asof": "读取时间（UTC）",
+        "th_assets": "总资产",
+        "th_liabilities": "负债",
+        "th_net": "净资产",
+        "th_asof": "截至",
+        "asof_none": "无项目",
+        "asof_unknown": "未提供",
         "not_available": "暂无数据",
         "no_values": "无记录值",
         "unreadable": "无法读取",
@@ -370,18 +432,21 @@ STRINGS: dict[str, dict[str, str]] = {
         "th_exp_names": "投资组合名称",
         "h_notes": "说明与免责声明",
         "note_basis": (
-            "HelloHQ 向插件提供的是每个投资组合、每种币种的一个合计："
-            "各项目最近一次记录值之和，资产与负债相加在一起。因此，本报告仅对"
-            "未记录负债的投资组合显示金额，此时该合计即为该投资组合的总资产。"
-            "本报告不显示净资产。"
+            "每个合计是 HelloHQ 计入该投资组合、该币种的所有项目最近一次记录值之和。"
+            "负债按正数记录，本报告从不将其与资产相加。"
+        ),
+        "note_networth": (
+            "净资产为总资产减去负债，仅在同一币种内计算；不同币种之间不计算净资产，"
+            "也不相加或换算。"
         ),
         "note_app_differs": (
-            "这些数字可能与 HelloHQ 应用中显示的合计不同：应用会将所有币种换算为"
-            "同一币种，并按自身规则决定计入哪些项目。"
+            "这些数字可能与 HelloHQ 应用中显示的合计不同，因为应用会将所有币种换算为"
+            "同一币种。"
         ),
         "note_asof": (
-            "“读取时间”为本报告读取您工作区数据的时间（UTC）。合计中的每个数值"
-            "都有各自的记录日期，插件无法获取，因此合计可能包含远早于该时间记录的数值。"
+            "“截至”为 HelloHQ 提供的该合计中最新数值的日期，其中其他数值的日期可能更早。"
+            "“无项目”表示没有计入该类项目。“读取时间”为本报告读取您工作区数据的时间"
+            "（UTC），并非任何数值的日期。"
         ),
         "note_currency": "币种按记录显示；不同币种的金额不会相加，也不做换算。",
         "note_rounding": (
@@ -396,12 +461,12 @@ STRINGS: dict[str, dict[str, str]] = {
             "有 {n} 个投资组合暂无合计数据，未作任何估算或填补。"
         ),
         "note_liabilities_one": (
-            "有 1 个投资组合包含负债，未显示其金额：HelloHQ 目前尚未向插件分别"
-            "提供资产与负债，二者相加的数字会高估财富。"
+            "有 1 个投资组合包含负债，未显示其金额：其数据来自较旧版本的 HelloHQ，"
+            "该版本只向插件提供资产与负债相加后的合计，会高估财富。"
         ),
         "note_liabilities_other": (
-            "有 {n} 个投资组合包含负债，未显示其金额：HelloHQ 目前尚未向插件分别"
-            "提供资产与负债，二者相加的数字会高估财富。"
+            "有 {n} 个投资组合包含负债，未显示其金额：其数据来自较旧版本的 HelloHQ，"
+            "该版本只向插件提供资产与负债相加后的合计，会高估财富。"
         ),
         "note_unclassified_one": (
             "有 1 个投资组合未显示金额：未获得其项目数量信息，"
@@ -411,10 +476,18 @@ STRINGS: dict[str, dict[str, str]] = {
             "有 {n} 个投资组合未显示金额：未获得其项目数量信息，"
             "本插件无法判断其中是否包含负债。"
         ),
+        "note_legacy_one": (
+            "有 1 个投资组合的数据来自较旧版本的 HelloHQ，该版本只向插件提供合并后的合计。"
+            "因其未记录负债，故按总资产显示，日期不可用。"
+        ),
+        "note_legacy_other": (
+            "有 {n} 个投资组合的数据来自较旧版本的 HelloHQ，该版本只向插件提供合并后的合计。"
+            "因其未记录负债，故按总资产显示，日期不可用。"
+        ),
         "note_negative": "有一个或多个金额为负数，按记录原样显示。",
         "note_precision": (
-            "部分金额非常大。HelloHQ 以浮点数形式将合计传给插件，"
-            "此类金额的最后几位可能不精确。"
+            "较旧版本的 HelloHQ 以浮点数形式传递合计，其中部分金额非常大，"
+            "最后几位可能不精确。"
         ),
         "note_skipped_one": "有 1 条合计数据无法读取，已排除。",
         "note_skipped_other": "有 {n} 条合计数据无法读取，已排除。",
@@ -604,6 +677,97 @@ def _parse_counts(raw: Any) -> dict[str, tuple[int, int]]:
     return out
 
 
+def _exact_amount(value: Any) -> Decimal | None:
+    """An exact ``Decimal`` from the host's decimal STRING, else ``None``.
+
+    Only a plain decimal string is accepted: no JSON number (a double is not
+    exact), no exponent, no sign other than ``-``, no whitespace, no
+    ``NaN``/``Infinity``, ASCII digits only, at most ``_MAX_AMOUNT_CHARS``
+    characters and below 10**31.
+    """
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_AMOUNT_CHARS
+        or not _PLAIN_DECIMAL.fullmatch(value)
+    ):
+        return None
+    dec = Decimal(value)
+    if dec.adjusted() > _MAX_ADJUSTED_EXPONENT:
+        return None
+    return Decimal(0) if dec == 0 else dec
+
+
+def _as_of_date(value: Any) -> tuple[bool, str | None]:
+    """``(ok, "YYYY-MM-DD" | None)`` for an as-of field.
+
+    ``None`` is a valid "no items"; an ISO date or date-time (the host writes
+    ``2026-04-10T00:00:00.000Z``) gives its UTC calendar date; anything else is
+    not ok.
+    """
+    if value is None:
+        return True, None
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_DATE_CHARS
+        or not _ISO_DATE.fullmatch(value)
+    ):
+        return False, None
+    try:
+        if "T" in value:
+            moment = datetime.fromisoformat(value)
+            if moment.tzinfo is not None:
+                moment = moment.astimezone(UTC)
+            day = moment.date()
+        else:
+            day = date.fromisoformat(value)
+    except (ValueError, OverflowError):
+        return False, None
+    return True, day.isoformat()
+
+
+def _later(a: str | None, b: str | None) -> str | None:
+    """The later of two ISO dates; ``None`` means no date."""
+    if a is None or b is None:
+        return a or b
+    return max(a, b)
+
+
+def _read_total_row(
+    row: Any,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """One ``totals`` row -> ``(kind, currency_id, values)``, or ``None``.
+
+    ``kind`` is ``"split"`` for a row with ``assets``/``debts`` (the current
+    host) and ``"legacy"`` for a row with only the combined ``total`` (an older
+    host). ``None`` means the row is malformed and must be skipped; nothing from
+    it is used. A row with only one of ``assets``/``debts`` is malformed, not
+    legacy: it is never completed from ``total``.
+    """
+    if not isinstance(row, dict) or not isinstance(row.get("currency_id"), str):
+        return None
+    if "assets" not in row and "debts" not in row:
+        total = _as_decimal(row.get("total"))
+        if total is None:
+            return None
+        return "legacy", row["currency_id"], {"total": total}
+    assets = _exact_amount(row.get("assets"))
+    debts = _exact_amount(row.get("debts"))
+    assets_ok, assets_as_of = _as_of_date(row.get("assets_as_of", _ABSENT))
+    debts_ok, debts_as_of = _as_of_date(row.get("debts_as_of", _ABSENT))
+    if assets is None or debts is None or debts < 0 or not (assets_ok and debts_ok):
+        return None
+    # A date is missing only where no item counts; an amount needs its date.
+    if (assets != 0 and assets_as_of is None) or (debts != 0 and debts_as_of is None):
+        return None
+    values = {
+        "assets": assets,
+        "debts": debts,
+        "assets_as_of": assets_as_of,
+        "debts_as_of": debts_as_of,
+    }
+    return "split", row["currency_id"], values
+
+
 def build_report(context: Any, now: datetime | None = None) -> dict[str, Any]:
     """Build the language-neutral report model from the host context.
 
@@ -612,6 +776,15 @@ def build_report(context: Any, now: datetime | None = None) -> dict[str, Any]:
     """
     with localcontext(_DECIMAL_CONTEXT):
         return _build_report(context, now)
+
+
+def _split_slot() -> dict[str, Any]:
+    return {
+        "assets": Decimal(0),
+        "debts": Decimal(0),
+        "assets_as_of": None,
+        "debts_as_of": None,
+    }
 
 
 def _build_report(context: Any, now: datetime | None) -> dict[str, Any]:
@@ -631,8 +804,9 @@ def _build_report(context: Any, now: datetime | None) -> dict[str, Any]:
         p["name"] = p["name"] or None
     by_id = {p["id"]: p for p in portfolios}
 
-    # Per portfolio: None = no entry from the host; else currency -> exact sum.
-    sums_by_id: dict[str, dict[str, Decimal] | None] = {
+    # Per portfolio: None = no entry from the host; else {"split": code -> exact
+    # assets/debts, "legacy": code -> combined total of an older host}.
+    reads: dict[str, dict[str, dict[str, Any]] | None] = {
         p["id"]: None for p in portfolios
     }
     dropped_by_id: dict[str, int] = {}
@@ -647,84 +821,151 @@ def _build_report(context: Any, now: datetime | None) -> dict[str, Any]:
             # Totals for a portfolio whose name was not provided.
             by_id[pid] = {"id": pid, "name": None}
             portfolios.append(by_id[pid])
-            sums_by_id[pid] = None
-        if sums_by_id[pid] is not None:
+            reads[pid] = None
+        if reads[pid] is not None:
             skipped += 1  # a second entry for the same portfolio: keep the first
             continue
-        sums: dict[str, Decimal] = {}
+        split: dict[str, dict[str, Any]] = {}
+        legacy: dict[str, dict[str, Any]] = {}
         dropped = 0
         rows = entry.get("totals")
         for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
+            parsed = _read_total_row(row)
+            if parsed is None:
                 skipped += 1
                 dropped += 1
                 continue
-            amount = _as_decimal(row.get("total"))
-            if amount is None or not isinstance(row.get("currency_id"), str):
-                skipped += 1
-                dropped += 1
-                continue
-            code = resolve_currency(row["currency_id"], table)
+            kind, currency_id, values = parsed
+            code = resolve_currency(currency_id, table)
             if code is None:
                 unknown_currency += 1
                 dropped += 1
                 continue
-            sums[code] = sums.get(code, Decimal(0)) + amount
-        sums_by_id[pid] = sums
+            if kind == "legacy":
+                slot = legacy.setdefault(code, {"total": Decimal(0), "rows": 0})
+                slot["total"] += values["total"]
+                slot["rows"] += 1
+                continue
+            slot = split.setdefault(code, _split_slot())
+            slot["assets"] += values["assets"]
+            slot["debts"] += values["debts"]
+            slot["assets_as_of"] = _later(slot["assets_as_of"], values["assets_as_of"])
+            slot["debts_as_of"] = _later(slot["debts_as_of"], values["debts_as_of"])
+        for code in [c for c in legacy if c in split]:
+            # The same currency in both shapes: the split is authoritative; the
+            # combined total adds debts in and cannot be reconciled with it.
+            skipped += legacy[code]["rows"]
+            dropped += legacy[code]["rows"]
+            del legacy[code]
+        reads[pid] = {"split": split, "legacy": legacy}
         dropped_by_id[pid] = dropped
 
     exposure: dict[str, list[dict[str, Any]]] = {}
     combined: dict[str, dict[str, Any]] = {}
-    status_count = {
-        s: 0
-        for s in (
-            "shown",
-            "liabilities",
-            "unclassified",
-            "empty",
-            "unreadable",
-            "missing",
-        )
-    }
+    status_count = dict.fromkeys(
+        ("shown", "liabilities", "unclassified", "empty", "unreadable", "missing"), 0
+    )
+    withheld_count = {"liabilities": 0, "unclassified": 0}
+    legacy_shown = 0
     any_negative = False
     any_imprecise = False
     for p in portfolios:
-        sums = sums_by_id.get(p["id"])
-        assets, debts = counts.get(p["id"], (None, None))
-        p["asset_items"], p["liability_items"] = assets, debts
-        p["currencies"] = sorted(sums or {})
+        read = reads.get(p["id"])
+        asset_items, debt_items = counts.get(p["id"], (None, None))
+        p["asset_items"], p["liability_items"] = asset_items, debt_items
+        split = read["split"] if read else {}
+        legacy = read["legacy"] if read else {}
+        p["currencies"] = sorted({*split, *legacy})
         p["totals"] = []
-        if sums is None:
+        p["withheld"] = None
+        # Older host: a combined total is assets only when no liability item
+        # exists; withhold it when one does or when that cannot be told.
+        if legacy:
+            if debt_items is None:
+                reason = "unclassified"
+            elif debt_items > 0:
+                reason = "liabilities"
+            else:
+                reason = None
+            if reason:
+                p["withheld"] = {"reason": reason, "currencies": sorted(legacy)}
+                withheld_count[reason] += 1
+        rows: list[dict[str, Any]] = []
+        for code in sorted(split):
+            slot = split[code]
+            rows.append(
+                {
+                    "currency": code,
+                    "source": "split",
+                    "assets": slot["assets"],
+                    "liabilities": slot["debts"],
+                    "assets_as_of": slot["assets_as_of"],
+                    "liabilities_as_of": slot["debts_as_of"],
+                }
+            )
+        if legacy and not p["withheld"]:
+            legacy_shown += 1
+            for code in sorted(legacy):
+                total = legacy[code]["total"]
+                any_imprecise = any_imprecise or _beyond_double(total, code)
+                rows.append(
+                    {
+                        "currency": code,
+                        "source": "legacy",
+                        "assets": total,
+                        "liabilities": Decimal(0),
+                        "assets_as_of": None,
+                        "liabilities_as_of": None,
+                    }
+                )
+        rows.sort(key=lambda r: r["currency"])
+
+        if read is None:
             status = "missing"
-        elif not sums:
-            status = "unreadable" if dropped_by_id.get(p["id"]) else "empty"
-        elif debts is None:
-            status = "unclassified"
-        elif debts > 0:
-            status = "liabilities"
-        else:
+        elif rows:
             status = "shown"
+        elif p["withheld"]:
+            status = p["withheld"]["reason"]
+        else:
+            status = "unreadable" if dropped_by_id.get(p["id"]) else "empty"
         p["totals_status"] = status
         status_count[status] += 1
         for code in p["currencies"]:
             exposure.setdefault(code, []).append({"id": p["id"], "name": p["name"]})
-        if status != "shown":
-            continue  # withheld amounts never enter the model
-        for code in p["currencies"]:
-            amount = sums[code]
-            any_negative = any_negative or amount < 0
-            any_imprecise = any_imprecise or _beyond_double(amount, code)
-            p["totals"].append({"currency": code, "amount": _decimal_text(amount)})
-            slot = combined.setdefault(
-                code, {"currency": code, "sum": Decimal(0), "portfolios": []}
+        for r in rows:  # withheld amounts never enter the model
+            code = r["currency"]
+            net = r["assets"] - r["liabilities"]
+            any_negative = any_negative or r["assets"] < 0 or net < 0
+            p["totals"].append(
+                {
+                    "currency": code,
+                    "source": r["source"],
+                    "assets": _decimal_text(r["assets"]),
+                    "liabilities": _decimal_text(r["liabilities"]),
+                    "net_worth": _decimal_text(net),
+                    "assets_as_of": r["assets_as_of"],
+                    "liabilities_as_of": r["liabilities_as_of"],
+                }
             )
-            slot["sum"] += amount
+            slot = combined.setdefault(
+                code,
+                {
+                    "currency": code,
+                    "assets": Decimal(0),
+                    "liabilities": Decimal(0),
+                    "portfolios": [],
+                },
+            )
+            slot["assets"] += r["assets"]
+            slot["liabilities"] += r["liabilities"]
             slot["portfolios"].append({"id": p["id"], "name": p["name"]})
 
     combined_totals = [
         {
             "currency": slot["currency"],
-            "total_assets": _decimal_text(slot["sum"]),
+            "total_assets": _decimal_text(slot["assets"]),
+            "total_liabilities": _decimal_text(slot["liabilities"]),
+            "net_worth": _decimal_text(slot["assets"] - slot["liabilities"]),
             "portfolio_count": len(slot["portfolios"]),
             "portfolios": slot["portfolios"],
         }
@@ -736,20 +977,21 @@ def _build_report(context: Any, now: datetime | None) -> dict[str, Any]:
     ]
 
     shown = status_count["shown"]
-    withheld = status_count["liabilities"] + status_count["unclassified"]
+    withheld = sum(1 for p in portfolios if p["withheld"])
     if not portfolios:
         data_status = "no_portfolios"
     elif not shown and not withheld:
         data_status = "no_totals"
     elif not shown:
         data_status = "withheld"
-    elif shown + status_count["empty"] == len(portfolios):
+    elif not withheld and shown + status_count["empty"] == len(portfolios):
         data_status = "complete"
     else:
         data_status = "partial"
 
     notes: list[dict[str, Any]] = [
         {"code": "basis"},
+        {"code": "networth"},
         {"code": "app_differs"},
         {"code": "asof"},
         {"code": "currency"},
@@ -759,10 +1001,12 @@ def _build_report(context: Any, now: datetime | None) -> dict[str, Any]:
         notes.append({"code": "totals_not_provided"})
     elif status_count["missing"]:
         notes.append({"code": "missing_totals", "n": status_count["missing"]})
-    if status_count["liabilities"]:
-        notes.append({"code": "liabilities", "n": status_count["liabilities"]})
-    if status_count["unclassified"]:
-        notes.append({"code": "unclassified", "n": status_count["unclassified"]})
+    if withheld_count["liabilities"]:
+        notes.append({"code": "liabilities", "n": withheld_count["liabilities"]})
+    if withheld_count["unclassified"]:
+        notes.append({"code": "unclassified", "n": withheld_count["unclassified"]})
+    if legacy_shown:
+        notes.append({"code": "legacy", "n": legacy_shown})
     if any_negative:
         notes.append({"code": "negative"})
     if any_imprecise:
@@ -859,6 +1103,26 @@ _WITHHELD_LABEL = {
 }
 
 
+_NO_AMOUNT_LABEL = {
+    "empty": "no_values",
+    "unreadable": "unreadable",
+    "missing": "not_available",
+}
+
+
+def _status_row(name: str, currencies: str, label: str) -> list[str]:
+    """A table row that says why there is no amount (the label sits in the
+    first amount column; the other five are empty)."""
+    return [name, currencies, label, *([_EM_DASH] * 4)]
+
+
+def _as_of_cell(as_of: str | None, *, unknown: bool, lang: str) -> str:
+    """A date, "No items" (the host sent null) or "Not provided" (older host)."""
+    if as_of:
+        return as_of
+    return STRINGS[lang]["asof_unknown" if unknown else "asof_none"]
+
+
 def build_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     s = STRINGS[lang]
     asof = _display_time(model["generated_at"])
@@ -899,7 +1163,11 @@ def build_blocks(model: dict[str, Any], lang: str) -> list[Block]:
                     [
                         _plural(lang, "sum_combined_item", e["portfolio_count"]).format(
                             currency=e["currency"],
-                            amount=format_amount(e["total_assets"], e["currency"]),
+                            assets=format_amount(e["total_assets"], e["currency"]),
+                            liabilities=format_amount(
+                                e["total_liabilities"], e["currency"]
+                            ),
+                            net=format_amount(e["net_worth"], e["currency"]),
                             count=e["portfolio_count"],
                             names=_name_list(e["portfolios"], lang),
                             asof=asof,
@@ -914,36 +1182,45 @@ def build_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     if not portfolios:
         blocks.append(("p", s["portfolios_none"]))
     else:
-        blocks.append(("p", s["portfolios_intro"]))
+        blocks.append(("p", s["portfolios_intro"].format(asof=asof)))
         rows: list[list[str]] = []
         for p in portfolios:
             name = _display_name(p, lang)
             st = p["totals_status"]
-            if st == "shown":
-                for t in p["totals"]:
-                    rows.append(
-                        [
-                            name,
-                            t["currency"],
-                            format_amount(t["amount"], t["currency"]),
-                            asof,
-                        ]
-                    )
-            elif st in _WITHHELD_LABEL:
-                currencies = s["name_sep"].join(p["currencies"])
-                rows.append([name, currencies, s[_WITHHELD_LABEL[st]], asof])
-            elif st == "empty":
-                rows.append([name, _EM_DASH, s["no_values"], asof])
-            elif st == "unreadable":
-                rows.append([name, _EM_DASH, s["unreadable"], asof])
-            else:
-                rows.append([name, _EM_DASH, s["not_available"], _EM_DASH])
+            for t in p["totals"]:
+                cur = t["currency"]
+                legacy = t["source"] == "legacy"
+                rows.append(
+                    [
+                        name,
+                        cur,
+                        format_amount(t["assets"], cur),
+                        _as_of_cell(t["assets_as_of"], unknown=legacy, lang=lang),
+                        format_amount(t["liabilities"], cur),
+                        _as_of_cell(t["liabilities_as_of"], unknown=False, lang=lang),
+                        format_amount(t["net_worth"], cur),
+                    ]
+                )
+            if p["withheld"]:
+                label = s[_WITHHELD_LABEL[p["withheld"]["reason"]]]
+                currencies = s["name_sep"].join(p["withheld"]["currencies"])
+                rows.append(_status_row(name, currencies, label))
+            elif st in _NO_AMOUNT_LABEL:
+                rows.append(_status_row(name, _EM_DASH, s[_NO_AMOUNT_LABEL[st]]))
         blocks.append(
             (
                 "table",
-                [s["th_portfolio"], s["th_currency"], s["th_total"], s["th_asof"]],
+                [
+                    s["th_portfolio"],
+                    s["th_currency"],
+                    s["th_assets"],
+                    s["th_asof"],
+                    s["th_liabilities"],
+                    s["th_asof"],
+                    s["th_net"],
+                ],
                 rows,
-                ["l", "l", "r", "l"],
+                ["l", "l", "r", "l", "r", "l", "r"],
             )
         )
 
