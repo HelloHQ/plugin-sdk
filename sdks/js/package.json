@@ -43,7 +43,7 @@
   ],
   "devDependencies": {
     "@bytecodealliance/componentize-js": "^0.23.0",
-    "@bytecodealliance/jco": "^1.35.0",
+    "@bytecodealliance/jco": "^1.39.0",
     "typescript": "^7.0.2"
   },
   "overrides": {
