@@ -1,6 +1,6 @@
 module github.com/HelloHQ/plugin-sdk/sdks/go
 
-go 1.24
+go 1.27.3
 
 // Tier 2 build target (Component Model + WASI 0.3):
 //   tinygo build -target=wasip2 --wit-package wit -o plugin.wasm .

@@ -40,7 +40,7 @@ jobs:
         run: python3 scripts/release_sdk_check.py check --tag "$TAG"
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.24'
+          go-version: '1.27.3'
       - name: Test the module the tag publishes
         working-directory: sdks/go
         run: go test ./...

@@ -147,7 +147,7 @@ the leaner Rust `no_std` components.
 
 | Tool            | Version used | Install |
 | --------------- | ------------ | ------- |
-| TinyGo          | 0.41.1       | `brew tap tinygo-org/tools && brew install tinygo` |
+| TinyGo          | 0.44.0       | `brew tap tinygo-org/tools && brew install tinygo` |
 | wit-bindgen-go  | v0.7.0       | `go install go.bytecodealliance.org/cmd/wit-bindgen-go@latest` |
 | wasm-tools      | 1.252.0      | `cargo install wasm-tools` |
 | `go.bytecodealliance.org/cm` | v0.3.0 | (go.mod dependency) |

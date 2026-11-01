@@ -29,7 +29,7 @@ the sync TinyGo/`wit-bindgen-go` path can't drain a stream.
 
 Requires:
 
-- **TinyGo ≥ 0.41** — `brew tap tinygo-org/tools && brew install tinygo`
+- **TinyGo ≥ 0.42** (the first with Go 1.27) — `brew tap tinygo-org/tools && brew install tinygo`
 - **wasm-tools ≥ 1.252** — `cargo install wasm-tools` (for the final inspection)
 - wit-bindgen-go is **not** needed to build (the SDK bindings are committed).
 

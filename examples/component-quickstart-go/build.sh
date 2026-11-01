@@ -13,11 +13,11 @@
 #   3. `wasm-tools component wit` prints the final imports/exports.
 #
 # Requires:
-#   - TinyGo >= 0.41 (brew tap tinygo-org/tools; brew install tinygo)
+#   - TinyGo >= 0.42, the first with Go 1.27 (brew tap tinygo-org/tools; brew install tinygo)
 #   - wit-bindgen-go (only to (re)generate sdks/go/internal/bindings; bindings
 #     are committed, so a plain build does not need it)
 #   - wasm-tools >= 1.252 for the final inspection
-#   - wasi-virt pinned to the last wasi-0.2.0-compatible rev (TinyGo 0.41 emits
+#   - wasi-virt pinned to the last wasi-0.2.0-compatible rev (TinyGo 0.41-0.44 emit
 #     wasi@0.2.0 imports; newer wasi-virt revs only support 0.2.1/0.2.3):
 #       cargo install --git https://github.com/bytecodealliance/wasi-virt \
 #         --rev b662e419bb741c635c7ceceeeae02f5278dd86a4 --locked wasi-virt

@@ -7,7 +7,7 @@ This is a polyglot monorepo. Each SDK is independently versioned and published.
 | `sdks/python` | Python 3.11+, hatchling | PyPI: `hellohq-plugin-sdk` |
 | `sdks/rust` | Rust, `wasm32-wasip1` | crates.io: `hellohq-plugin-sdk` |
 | `sdks/js` | Node 20+, tsc | npm: `@hellohq/plugin-sdk` |
-| `sdks/go` | Go 1.24+, `wasip1` | Go module |
+| `sdks/go` | Go 1.27.3+, `wasip1` | Go module |
 | `cli` | Dart 3.4+ | pub.dev + Homebrew |
 | `mock-host` | Dart 3.4+ | (internal, used by `cli`) |
 

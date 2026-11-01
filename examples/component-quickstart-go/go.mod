@@ -1,6 +1,6 @@
 module github.com/HelloHQ/plugin-sdk/examples/component-quickstart-go
 
-go 1.24
+go 1.27.3
 
 require github.com/HelloHQ/plugin-sdk/sdks/go v0.0.0
 
