@@ -247,7 +247,7 @@ enrolled key. Three steps; the first two are once per author:
    line to restrict it.
 2. **Build the enrollment.** The registry enrolls an author through a reviewed
    PR that adds `authors/<slug>.json`: your identity, your two public keys, the
-   plugin id prefixes you may sign and a proof that you hold the Ed25519 key.
+   plugin id prefixes you may sign and a proof that you hold each of the keys.
    `keys enroll` writes that file from the keys of step 1:
 
    ```bash
@@ -260,8 +260,8 @@ enrolled key. Three steps; the first two are once per author:
    - `--prefix` (repeat it, up to 8) is a plugin id namespace you may sign:
      dotted, ending in `.`, with at least two labels (`com.acme.` covers
      `com.acme.widget`). `com.hellohq.` and anything under it is reserved. The
-     prefixes are sorted for you, as the registry requires, and the proof
-     covers the sorted list.
+     prefixes are sorted for you, as the registry requires, and the proofs
+     cover the sorted list.
    - Identity is `--github-user <login>`, which looks up the **numeric**
      account id with `gh api users/<login>` (the id survives a rename, the
      login does not) and warns when `gh` is logged in as a different account;
@@ -276,15 +276,17 @@ enrolled key. Three steps; the first two are once per author:
      `scripts/check-authors.mjs` then runs on a scratch copy of its enrolled
      authors plus your file, so a key you reuse or a prefix that overlaps an
      enrolled author is refused now (exit 65, the registry's text, no file
-     written) instead of in your PR. It needs `node`; without node it warns and
+     written) instead of in your PR. It needs Node 24.7 or later (the check
+     verifies ML-DSA-65); without node, or with an older one, it warns and
      skips. Without `--registry-dir` those cross-author checks run only in the
      registry's CI.
 
-   Everything is validated before anything is signed. The proof is an Ed25519
-   signature (`openssl pkeyutl -sign -rawin`, the same as for artifacts) over
-   the registry's enrollment statement; the command verifies it against the
-   public key in the file it is about to write and exits 70 without writing if
-   it does not verify. It prints the file path, the PR steps and the custody
+   Everything is validated before anything is signed. The proofs are an Ed25519
+   and an ML-DSA-65 signature (`openssl pkeyutl -sign -rawin`, the same as for
+   artifacts) over the registry's enrollment statement; the registry refuses an
+   enrollment without both. The command verifies each against the public key
+   in the file it is about to write and exits 70 without writing if either
+   does not verify. It prints the file path, the PR steps and the custody
    reminder, and never prints private material. Exit codes: 64 usage, 65 bad
    data (invalid slug, prefix or identity, unknown GitHub user, would
    overwrite, the registry's check refused), 66 a key file or the registry

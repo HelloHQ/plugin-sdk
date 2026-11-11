@@ -42,7 +42,7 @@ String? _skipRegistry() {
         ? null
         : 'this plugin-registry checkout has no scripts/check-authors.mjs';
   }
-  return hasNode ? null : 'node is not installed';
+  return skipUnlessNodeMlDsa();
 }
 
 /// Keys made by `keys generate` with the real openssl.
@@ -178,9 +178,19 @@ void main() {
                 )
                 as Map;
         expect(r.record['public_keys'], keysJson);
+        expect((r.record['proof'] as Map).keys, ['ed25519', 'ml-dsa-65']);
         expect(
           base64.decode((r.record['proof'] as Map)['ed25519'] as String),
           hasLength(64),
+        );
+        expect(
+          await tool.verifyWithPublicKey(
+            HybridAlgorithm.mlDsa65,
+            base64.decode(keysJson['ml-dsa-65'] as String),
+            stmt.stdout as List<int>,
+            base64.decode((r.record['proof'] as Map)['ml-dsa-65'] as String),
+          ),
+          isTrue,
         );
         expect(
           await tool.verifyWithPublicKey(
@@ -398,6 +408,58 @@ void main() {
         // And the unmodified file is fine.
         check = await _registryCheck({'acme-labs.json': text});
         expect(check.exitCode, 0, reason: '${check.stdout}');
+      },
+      skip: _skipRegistry(),
+    );
+
+    test(
+      'each proof is required: good, bad and missing, for both keys',
+      () async {
+        final keys = await _newKeys();
+        final work = tempDir('hqplugin_enroll_work_');
+        final r = await _enroll(keys, work: work, registry: _registryWith({}));
+        expect(r.code, 0, reason: r.err);
+        final good = r.record;
+
+        // A second enrollment's proofs: valid signatures, by other keys.
+        final other = await _enroll(
+          await _newKeys(),
+          work: tempDir('hqplugin_enroll_other_'),
+          registry: _registryWith({}),
+        );
+        expect(other.code, 0, reason: other.err);
+        final strangers = other.record['proof'] as Map;
+
+        Future<String> refusal(Map<String, dynamic> proof) async {
+          final check = await _registryCheck({
+            'acme-labs.json': jsonEncode({...good, 'proof': proof}),
+          });
+          expect(check.exitCode, 1, reason: '$proof');
+          return '${check.stdout}';
+        }
+
+        final proof = good['proof'] as Map<String, dynamic>;
+        // good
+        final ok = await _registryCheck({'acme-labs.json': jsonEncode(good)});
+        expect(ok.exitCode, 0, reason: '${ok.stdout}');
+        // Ed25519: bad, missing
+        expect(
+          await refusal({...proof, 'ed25519': strangers['ed25519']}),
+          contains('proof.ed25519 does not verify'),
+        );
+        expect(
+          await refusal({'ml-dsa-65': proof['ml-dsa-65']}),
+          contains('proof.ed25519 does not verify'),
+        );
+        // ML-DSA-65: bad, missing
+        expect(
+          await refusal({...proof, 'ml-dsa-65': strangers['ml-dsa-65']}),
+          contains('proof.ml-dsa-65 does not verify'),
+        );
+        expect(
+          await refusal({'ed25519': proof['ed25519']}),
+          contains('proof.ml-dsa-65 is required'),
+        );
       },
       skip: _skipRegistry(),
     );

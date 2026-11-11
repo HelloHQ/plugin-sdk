@@ -564,9 +564,10 @@ jobs:
       # cli/test/author_enrollment*_test.dart) are checked against the
       # registry's own scripts (statement vectors, author-cert.mjs,
       # check-authors.mjs), so the job needs a plugin-registry checkout and
-      # node (the registry scripts have no npm dependencies).
-      # HELLOHQ_REQUIRE_REGISTRY makes a missing checkout a failure instead of
-      # a skip.
+      # node (the registry scripts have no npm dependencies). Those scripts
+      # verify ML-DSA-65, which needs Node 24.7 or later.
+      # HELLOHQ_REQUIRE_REGISTRY makes a missing checkout (or an older node) a
+      # failure instead of a skip.
       - uses: actions/checkout@v7
         with:
           repository: HelloHQ/plugin-registry
@@ -574,7 +575,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
 
       # ML-DSA-65 needs OpenSSL 3.5+. Homebrew's openssl@3 has it; the Linux
       # and Windows runners' OpenSSL is older, so their ML-DSA tests skip (the

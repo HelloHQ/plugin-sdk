@@ -167,7 +167,8 @@ List<String> publicKeyProblems(HybridAlgorithm alg, Object? key) {
 
 /// Problems with an enrollment record, [] when sound. The shape rules of the
 /// registry's `enrollmentProblems` (slug, identity, prefixes, tier, key sizes,
-/// no unknown keys) without the proof check, which needs a verifier: see
+/// no unknown keys) without the proof checks (an Ed25519 and an ML-DSA-65
+/// signature over the statement), which need a verifier: see
 /// `OpenSslTool.verifyWithPublicKey`. [slugFromFile] is the file name without
 /// `.json`.
 List<String> enrollmentProblems(Object? author, {String? slugFromFile}) {
@@ -230,15 +231,19 @@ class AuthorEnrollment {
     'tier': kAuthorTier,
   };
 
-  /// The bytes the author's Ed25519 key signs.
+  /// The bytes both of the author's keys sign (the proof of possession).
   Uint8List get statement => enrollmentStatement(toJson());
 
-  /// The file the registry reads: [toJson] plus `proof.ed25519`, 2-space JSON,
-  /// each prefix on its own line, a trailing newline (the layout of the
-  /// registry's own authors/*.json).
-  String toFileJson(List<int> ed25519Proof) =>
+  /// The file the registry reads: [toJson] plus `proof.ed25519` and
+  /// `proof.ml-dsa-65`, 2-space JSON, each prefix on its own line, a trailing
+  /// newline (the layout of the registry's own authors/*.json).
+  ///
+  /// The registry refuses a new enrollment without the ML-DSA-65 proof;
+  /// [mlDsa65Proof] may be left out only to reproduce a record enrolled
+  /// before that proof was required.
+  String toFileJson(List<int> ed25519Proof, [List<int>? mlDsa65Proof]) =>
       '${const JsonEncoder.withIndent('  ').convert({
         ...toJson(),
-        'proof': {HybridAlgorithm.ed25519.sigAlg: base64.encode(ed25519Proof)},
+        'proof': {HybridAlgorithm.ed25519.sigAlg: base64.encode(ed25519Proof), if (mlDsa65Proof != null) HybridAlgorithm.mlDsa65.sigAlg: base64.encode(mlDsa65Proof)},
       })}\n';
 }

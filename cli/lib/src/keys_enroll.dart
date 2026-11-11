@@ -3,20 +3,23 @@
 //
 // An author is enrolled by a reviewed PR that adds `authors/<slug>.json` to
 // the plugin registry: an OIDC identity, the two public keys, the id prefixes
-// the author may sign, and a proof that they hold the Ed25519 key (a signature
-// over the enrollment statement, see author_enrollment.dart). This command
-// writes that file, signed and self-checked.
+// the author may sign, and a proof that they hold each key (an Ed25519 and an
+// ML-DSA-65 signature over the enrollment statement, see
+// author_enrollment.dart). This command writes that file, signed and
+// self-checked.
 //
 // Everything is validated before anything is signed: the slug, the prefixes
 // (sorted for the author), the identity (the numeric GitHub account id, looked
-// up through `gh` when only a login is given) and the key sizes. The proof is
-// made by OpenSSL with the Ed25519 key and verified again, against the public
-// key that goes into the file, from the JSON that is written; a proof that does
-// not verify is an internal error (70) and no file is left. With
+// up through `gh` when only a login is given) and the key sizes. Both proofs
+// are made by OpenSSL, one with each key, and verified again, against the
+// public keys that go into the file, from the JSON that is written; a proof
+// that does not verify is an internal error (70) and no file is left. With
 // `--registry-dir <plugin-registry checkout>` the registry's own
 // `scripts/check-authors.mjs` runs on a scratch copy of its enrolled authors
 // plus the new file, which also catches a reused key or an overlapping prefix
-// before the PR. The private keys are only paths handed to openssl: never read
+// before the PR. It verifies ML-DSA-65, which needs Node 24.7 or later; with
+// an older node the check is skipped here, with a warning (registry CI still
+// runs it). The private keys are only paths handed to openssl: never read
 // into a Dart string, never printed.
 import 'dart:convert';
 import 'dart:io';
@@ -160,14 +163,19 @@ Future<int> runKeysEnroll({
       );
     }
 
-    // ── proof, self-verified against what is written ──────────────────────
+    // ── proofs, self-verified against what is written ─────────────────────
     final statement = enrollment.statement;
-    final proof = await tool.sign(
+    final edProof = await tool.sign(
       HybridAlgorithm.ed25519,
       signer.ed25519KeyPath,
       statement,
     );
-    final text = enrollment.toFileJson(proof);
+    final mlProof = await tool.sign(
+      HybridAlgorithm.mlDsa65,
+      signer.mlDsa65KeyPath,
+      statement,
+    );
+    final text = enrollment.toFileJson(edProof, mlProof);
     await _selfVerify(tool, enrollment, statement, text);
 
     // ── the registry's own checks, on a scratch copy ──────────────────────
@@ -320,9 +328,9 @@ Future<String> _resolveGitHubId(
   return id;
 }
 
-/// Re-reads the JSON that is about to be written and checks that the proof in
-/// it verifies, over the statement rebuilt from that JSON, under the public
-/// key in that JSON. Throws a 70 [_Refusal] when anything differs.
+/// Re-reads the JSON that is about to be written and checks that both proofs
+/// in it verify, over the statement rebuilt from that JSON, under the public
+/// keys in that JSON. Throws a 70 [_Refusal] when anything differs.
 Future<void> _selfVerify(
   OpenSslTool tool,
   AuthorEnrollment enrollment,
@@ -348,27 +356,31 @@ Future<void> _selfVerify(
       'the written record has a different statement than the one signed',
     );
   }
-  final proof = (parsed['proof'] as Map?)?[HybridAlgorithm.ed25519.sigAlg];
+  final proofs = parsed['proof'];
   final keys = parsed['public_keys'] as Map;
-  final Uint8List sig;
-  final Uint8List key;
-  try {
-    sig = base64.decode(proof as String);
-    key = base64.decode(keys[HybridAlgorithm.ed25519.sigAlg] as String);
-  } on Object {
-    throw bad('the proof or the public key is not base64');
-  }
-  if (sig.length != HybridAlgorithm.ed25519.signatureBytes) {
-    throw bad('the proof is ${sig.length} bytes');
-  }
-  if (!_sameBytes(key, enrollment.ed25519PublicKey) ||
-      !await tool.verifyWithPublicKey(
-        HybridAlgorithm.ed25519,
-        key,
-        rebuilt,
-        sig,
-      )) {
-    throw bad('proof.ed25519 does not verify under public_keys.ed25519');
+  for (final (alg, expectedKey) in [
+    (HybridAlgorithm.ed25519, enrollment.ed25519PublicKey),
+    (HybridAlgorithm.mlDsa65, enrollment.mlDsa65PublicKey),
+  ]) {
+    final proof = proofs is Map ? proofs[alg.sigAlg] : null;
+    if (proof == null) throw bad('proof.${alg.sigAlg} is missing');
+    final Uint8List sig;
+    final Uint8List key;
+    try {
+      sig = base64.decode(proof as String);
+      key = base64.decode(keys[alg.sigAlg] as String);
+    } on Object {
+      throw bad('the ${alg.sigAlg} proof or public key is not base64');
+    }
+    if (sig.length != alg.signatureBytes) {
+      throw bad('proof.${alg.sigAlg} is ${sig.length} bytes');
+    }
+    if (!_sameBytes(key, expectedKey) ||
+        !await tool.verifyWithPublicKey(alg, key, rebuilt, sig)) {
+      throw bad(
+        'proof.${alg.sigAlg} does not verify under public_keys.${alg.sigAlg}',
+      );
+    }
   }
 }
 
@@ -391,9 +403,11 @@ Future<String> _registryCheck(
   String text,
   StringSink err,
 ) async {
+  final String nodeVersion;
   try {
     final v = await run('node', const ['--version']);
     if (v.exitCode != 0) throw const ProcessException('node', ['--version']);
+    nodeVersion = '${v.stdout}'.trim();
   } on ProcessException {
     err.writeln(
       'keys enroll: warning: node was not found, so the registry checks '
@@ -401,6 +415,17 @@ Future<String> _registryCheck(
       'runs them on your PR. Install Node.js to run them now.',
     );
     return 'skipped (node is not installed)';
+  }
+  // The registry check verifies the ML-DSA-65 proof, which Node has from
+  // 24.7 on; an older node would refuse every enrollment.
+  if (!nodeHasMlDsa(nodeVersion)) {
+    final shown = sanitizeOpenSslText(nodeVersion);
+    err.writeln(
+      'keys enroll: warning: node $shown cannot verify ML-DSA-65 (it needs '
+      'Node 24.7 or later), so the registry checks were skipped here; '
+      'registry CI runs them on your PR. Install Node 24.7+ to run them now.',
+    );
+    return 'skipped (node $shown is older than 24.7)';
   }
   final scratch = Directory.systemTemp.createTempSync('hqplugin-enroll-');
   try {
@@ -473,6 +498,16 @@ Future<String> _registryCheck(
   }
 }
 
+/// Whether `node --version` output [version] (`v24.7.0`) is Node 24.7 or
+/// later, the first with ML-DSA-65 in its crypto module.
+bool nodeHasMlDsa(String version) {
+  final m = RegExp(r'^v?(\d+)\.(\d+)').firstMatch(version.trim());
+  if (m == null) return false;
+  final major = int.parse(m.group(1)!);
+  final minor = int.parse(m.group(2)!);
+  return major > 24 || (major == 24 && minor >= 7);
+}
+
 void _copyTree(Directory from, Directory to) {
   to.createSync(recursive: true);
   for (final entity in from.listSync(followLinks: false)) {
@@ -505,8 +540,8 @@ void _report(
     )
     ..writeln('  prefixes:  ${enrollment.idPrefixes.join(', ')}')
     ..writeln(
-      '  The proof was made with your Ed25519 key and verified against the '
-      'public key in the file.',
+      '  The proofs were made with your Ed25519 and ML-DSA-65 keys and '
+      'verified against the public keys in the file.',
     );
   if (sortedFrom != null) {
     o.writeln(
@@ -534,7 +569,7 @@ void _report(
       'commit it on its own, and open the PR against main.',
     )
     ..writeln(
-      '  3. CI re-runs the registry\'s checks: the record, your proof, no '
+      '  3. CI re-runs the registry\'s checks: the record, both proofs, no '
       'shared keys, no overlapping prefixes.',
     )
     ..writeln(

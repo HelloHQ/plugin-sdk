@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:hqplugin/src/author_signing.dart';
+import 'package:hqplugin/src/keys_enroll.dart' show nodeHasMlDsa;
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -334,12 +335,28 @@ Directory registryRoot() {
   return dir;
 }
 
-bool get hasNode {
+bool get hasNode => nodeVersion != null;
+
+/// What `node --version` prints, or null when node is not installed.
+String? get nodeVersion {
   try {
-    return Process.runSync('node', ['--version']).exitCode == 0;
+    final r = Process.runSync('node', ['--version']);
+    return r.exitCode == 0 ? '${r.stdout}'.trim() : null;
   } on ProcessException {
-    return false;
+    return null;
   }
+}
+
+/// Null when node can run the registry's signature checks, which verify
+/// ML-DSA-65 (Node 24.7 or later); otherwise why such a test skips. With
+/// HELLOHQ_REQUIRE_REGISTRY=1 an old node runs the test anyway, so it fails
+/// instead of skipping.
+String? skipUnlessNodeMlDsa() {
+  final v = nodeVersion;
+  if (v == null) return 'node is not installed';
+  if (nodeHasMlDsa(v) || requireRegistry) return null;
+  return 'node $v cannot verify ML-DSA-65 (the registry checks need Node '
+      '24.7 or later)';
 }
 
 /// Tests that run the registry's `scripts/author-signatures.mjs`. The script
@@ -358,7 +375,7 @@ String? skipUnlessAuthorSignaturesScript() {
     return 'this plugin-registry checkout has no scripts/author-signatures.mjs '
         '(plugin-registry#18)';
   }
-  return hasNode ? null : 'node is not installed';
+  return skipUnlessNodeMlDsa();
 }
 
 /// `PATH` with the directory of the configured openssl in front, so the
@@ -402,14 +419,15 @@ Directory tempDir(String prefix) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A registry directory (just authors/ and plugins/) in which [authorSlug] is
-/// enrolled with [publicKeys] for [idPrefix], with a valid Ed25519 proof of
-/// possession made by [ed25519KeyPath] through the registry's own
-/// `author-cert.mjs statement` and openssl. [manifest] and [sidecar] are
-/// written under plugins/<id>/.
+/// enrolled with [publicKeys] for [idPrefix], with valid proofs of possession
+/// of both keys, made by [ed25519KeyPath] and [mlDsa65KeyPath] through the
+/// registry's own `author-cert.mjs statement` and openssl. [manifest] and
+/// [sidecar] are written under plugins/<id>/.
 Future<Directory> syntheticRegistry({
   required OpenSslTool tool,
   required Map<String, String> publicKeys,
   required String ed25519KeyPath,
+  required String mlDsa65KeyPath,
   required Map<String, dynamic> manifest,
   String? sidecar,
   String authorSlug = 'test-author',
@@ -433,12 +451,15 @@ Future<Directory> syntheticRegistry({
     authorFile.path,
   ], binaryStdout: true);
   expect(stmt.exitCode, 0, reason: '${stmt.stderr}');
-  final proof = await tool.sign(
-    HybridAlgorithm.ed25519,
-    ed25519KeyPath,
-    stmt.stdout as List<int>,
-  );
-  author['proof'] = {'ed25519': base64.encode(proof)};
+  final statement = stmt.stdout as List<int>;
+  author['proof'] = {
+    'ed25519': base64.encode(
+      await tool.sign(HybridAlgorithm.ed25519, ed25519KeyPath, statement),
+    ),
+    'ml-dsa-65': base64.encode(
+      await tool.sign(HybridAlgorithm.mlDsa65, mlDsa65KeyPath, statement),
+    ),
+  };
   authorFile.writeAsStringSync(jsonEncode(author));
 
   final plugin = Directory(

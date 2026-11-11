@@ -73,7 +73,34 @@ void main() {
         mlDsa65PublicKey: base64.decode(keys['ml-dsa-65'] as String),
       );
       expect(enrollment.statement, utf8.encode(kCalvinStatement));
+      // calvin enrolled before the ML-DSA-65 proof was required.
       expect(enrollment.toFileJson(base64.decode(kCalvinProof)), kCalvinFile);
+    });
+
+    test('toFileJson writes both proofs, Ed25519 first', () {
+      final calvin = calvinRecord();
+      final keys = calvin['public_keys'] as Map;
+      final enrollment = AuthorEnrollment(
+        slug: 'calvin',
+        oidcIssuer: 'https://github.com',
+        oidcSubject: '95563',
+        idPrefixes: const ['com.calvinx.'],
+        ed25519PublicKey: base64.decode(keys['ed25519'] as String),
+        mlDsa65PublicKey: base64.decode(keys['ml-dsa-65'] as String),
+      );
+      final ml = List.filled(HybridAlgorithm.mlDsa65.signatureBytes, 5);
+      final text = enrollment.toFileJson(base64.decode(kCalvinProof), ml);
+      final proof = (jsonDecode(text) as Map)['proof'] as Map;
+      expect(proof.keys, ['ed25519', 'ml-dsa-65']);
+      expect(proof['ed25519'], kCalvinProof);
+      expect(proof['ml-dsa-65'], base64.encode(ml));
+      expect(
+        text,
+        kCalvinFile.replaceFirst(
+          '"ed25519": "$kCalvinProof"\n',
+          '"ed25519": "$kCalvinProof",\n    "ml-dsa-65": "${base64.encode(ml)}"\n',
+        ),
+      );
     });
 
     test(
@@ -598,7 +625,7 @@ void main() {
           'oidc_subject': '4242',
         });
         expect((r['public_keys'] as Map).keys, ['ed25519', 'ml-dsa-65']);
-        expect((r['proof'] as Map).keys, ['ed25519']);
+        expect((r['proof'] as Map).keys, ['ed25519', 'ml-dsa-65']);
         expect(r['tier'], 'author');
         expect(text, contains('  "id_prefixes": [\n    "com.acme."\n  ],'));
         expect(enrollmentProblems(r, slugFromFile: 'acme-labs'), isEmpty);
@@ -624,6 +651,35 @@ void main() {
               'id_prefixes': ['com.other.'],
             }),
             base64.decode((r['proof'] as Map)['ed25519'] as String),
+          ),
+          isFalse,
+        );
+        // The same for the ML-DSA-65 proof, under the ML-DSA-65 key.
+        final mlKey = base64.decode(
+          (r['public_keys'] as Map)['ml-dsa-65'] as String,
+        );
+        final mlProof = base64.decode(
+          (r['proof'] as Map)['ml-dsa-65'] as String,
+        );
+        expect(mlProof, hasLength(HybridAlgorithm.mlDsa65.signatureBytes));
+        expect(
+          await tool.verifyWithPublicKey(
+            HybridAlgorithm.mlDsa65,
+            mlKey,
+            enrollmentStatement(r),
+            mlProof,
+          ),
+          isTrue,
+        );
+        expect(
+          await tool.verifyWithPublicKey(
+            HybridAlgorithm.mlDsa65,
+            mlKey,
+            enrollmentStatement({
+              ...r,
+              'id_prefixes': ['com.other.'],
+            }),
+            mlProof,
           ),
           isFalse,
         );
@@ -1003,8 +1059,8 @@ void main() {
         expect(env.openssl.exes.last, '/from/env/openssl');
       });
 
-      test('the proof is one Ed25519 signature, made and checked as the '
-          'registry does', () async {
+      test('the proofs are one Ed25519 and one ML-DSA-65 signature, made and '
+          'checked as the registry does', () async {
         expect(await enroll(), 0, reason: '$err');
         final calls = env.openssl.calls;
         final ed = p.absolute(p.join(keys.path, kEd25519KeyFile));
@@ -1013,31 +1069,38 @@ void main() {
           for (final c in calls)
             if (c.first == 'pkeyutl' && c[1] == '-sign') c,
         ];
-        // The two key probes of OpenSslHybridSigner.open, then the proof.
-        expect(signs, hasLength(3));
-        expect(signs.last, [
-          'pkeyutl',
-          '-sign',
-          '-inkey',
-          ed,
-          '-rawin',
-          '-in',
-          signs.last[6],
-          '-out',
-          signs.last[8],
-        ]);
-        expect(p.basename(signs.last[6]), 'msg');
-        expect(p.basename(signs.last[8]), 'sig');
-        // Raw (pure) Ed25519, never a digest signature.
-        expect(signs.last, contains('-rawin'));
-        expect(signs.last, isNot(contains('-digest')));
-        expect(signs.last, isNot(contains(ml)));
-        // The last thing openssl is asked is to verify against a public key
-        // file, not a private one.
-        final last = calls.last;
-        expect(last.take(4), ['pkeyutl', '-verify', '-pubin', '-inkey']);
-        expect(last, contains('-rawin'));
-        expect(p.basename(last[4]), 'pub.pem');
+        // The two key probes of OpenSslHybridSigner.open, then the proofs.
+        expect(signs, hasLength(4));
+        for (final (sign, key) in [(signs[2], ed), (signs[3], ml)]) {
+          expect(sign, [
+            'pkeyutl',
+            '-sign',
+            '-inkey',
+            key,
+            '-rawin',
+            '-in',
+            sign[6],
+            '-out',
+            sign[8],
+          ]);
+          expect(p.basename(sign[6]), 'msg');
+          expect(p.basename(sign[8]), 'sig');
+          // Raw (pure) signatures, never a digest signature.
+          expect(sign, isNot(contains('-digest')));
+        }
+        // Each proof is checked, against a public key file, not a private
+        // one; the ML-DSA-65 proof is checked last.
+        final verifies = [
+          for (final c in calls)
+            if (c.first == 'pkeyutl' && c[1] == '-verify') c,
+        ];
+        expect(verifies.length, greaterThanOrEqualTo(4));
+        for (final v in verifies.skip(verifies.length - 2)) {
+          expect(v.take(4), ['pkeyutl', '-verify', '-pubin', '-inkey']);
+          expect(v, contains('-rawin'));
+          expect(p.basename(v[4]), 'pub.pem');
+        }
+        expect(calls.last, verifies.last);
         // No key is generated, copied or exported by enroll.
         for (final c in calls) {
           if (c.first == 'genpkey') {
@@ -1056,15 +1119,25 @@ void main() {
       test(
         'a proof that does not verify is exit 70 and leaves no file',
         () async {
-          // Verifications: the two key probes, then the proof check.
+          // Verifications: the two key probes, then the Ed25519 proof check.
           env.openssl.verifyQueue.addAll([true, true, false]);
           expect(await enroll(), 70);
           expect('$err', contains('did not check out'));
-          expect('$err', contains('does not verify'));
+          expect('$err', contains('proof.ed25519 does not verify'));
           expect(written().existsSync(), isFalse);
           expect(work.listSync(), isEmpty);
         },
       );
+
+      test('an ML-DSA-65 proof that does not verify is exit 70 too', () async {
+        // The probes and the Ed25519 proof pass; the ML-DSA-65 one fails.
+        env.openssl.verifyQueue.addAll([true, true, true, false]);
+        expect(await enroll(), 70);
+        expect('$err', contains('did not check out'));
+        expect('$err', contains('proof.ml-dsa-65 does not verify'));
+        expect(written().existsSync(), isFalse);
+        expect(work.listSync(), isEmpty);
+      });
 
       test('a failure after the check leaves nothing half written', () async {
         // Same, for a different default path.
@@ -1199,6 +1272,52 @@ void main() {
         expect(work.listSync(), isEmpty);
       });
 
+      test(
+        'node older than 24.7: warns and skips, the file is written',
+        () async {
+          for (final old in ['v22.12.0', 'v24.6.0', 'v20.19.5']) {
+            env.nodeVersion = old;
+            env.nodeCalls.clear();
+            err.clear();
+            out.clear();
+            final target = 'old-$old.json';
+            expect(
+              await enroll(registryDir: registry.path, outPath: target),
+              0,
+              reason: '$old: $err',
+            );
+            expect(env.nodeCalls, [
+              ['--version'],
+            ], reason: 'the check is not run on $old');
+            expect('$err', contains('node $old cannot verify ML-DSA-65'));
+            expect('$out', contains('skipped (node $old is older than 24.7)'));
+            expect(File(p.join(work.path, target)).existsSync(), isTrue);
+          }
+        },
+      );
+
+      test('nodeHasMlDsa reads node --version', () {
+        for (final v in [
+          'v24.7.0',
+          'v24.11.1',
+          'v25.0.0',
+          'v30.1.2',
+          '24.7.0',
+        ]) {
+          expect(nodeHasMlDsa(v), isTrue, reason: v);
+        }
+        for (final v in [
+          'v24.6.9',
+          'v22.20.0',
+          'v20.0.0',
+          '',
+          'node',
+          'vx.y',
+        ]) {
+          expect(nodeHasMlDsa(v), isFalse, reason: v);
+        }
+      });
+
       test('node missing: warns and skips, the file is written', () async {
         env.nodeInstalled = false;
         expect(await enroll(registryDir: registry.path), 0, reason: '$err');
@@ -1257,6 +1376,9 @@ class _Env {
   final List<List<String>> ghCalls = [];
 
   bool nodeInstalled = true;
+
+  /// What `node --version` prints. 24.7 is the first with ML-DSA-65.
+  String nodeVersion = 'v24.11.0';
   final List<List<String>> nodeCalls = [];
 
   /// Answers `node <script> <dir>`; the default says the registry is sound.
@@ -1290,7 +1412,7 @@ class _Env {
         }
         nodeCalls.add(args);
         if (args.length == 1 && args.first == '--version') {
-          return ProcessResult(1, 0, 'v22.0.0\n', '');
+          return ProcessResult(1, 0, '$nodeVersion\n', '');
         }
         return node(args);
     }

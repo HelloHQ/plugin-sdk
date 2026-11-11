@@ -103,6 +103,7 @@ void main() {
         tool: a.tool,
         publicKeys: a.publicKeys,
         ed25519KeyPath: a.edKey,
+        mlDsa65KeyPath: a.mlKey,
         manifest: manifest,
         sidecar: sidecar,
       );
@@ -123,6 +124,7 @@ void main() {
           tool: a.tool,
           publicKeys: a.publicKeys,
           ed25519KeyPath: a.edKey,
+          mlDsa65KeyPath: a.mlKey,
           manifest: _verifiedManifest(),
           sidecar: sidecar,
         );
@@ -143,6 +145,7 @@ void main() {
           tool: a.tool,
           publicKeys: a.publicKeys,
           ed25519KeyPath: a.edKey,
+          mlDsa65KeyPath: a.mlKey,
           manifest: prManifest,
           sidecar: sidecar,
         );
@@ -171,6 +174,7 @@ void main() {
           tool: a.tool,
           publicKeys: a.publicKeys,
           ed25519KeyPath: a.edKey,
+          mlDsa65KeyPath: a.mlKey,
           manifest: _verifiedManifest({'content_hash_sha256': 'cd' * 32}),
           sidecar: sidecar,
         );
@@ -180,6 +184,7 @@ void main() {
           tool: b.tool,
           publicKeys: b.publicKeys,
           ed25519KeyPath: b.edKey,
+          mlDsa65KeyPath: b.mlKey,
           manifest: manifest,
           sidecar: sidecar,
         );
@@ -191,6 +196,7 @@ void main() {
           tool: a.tool,
           publicKeys: a.publicKeys,
           ed25519KeyPath: a.edKey,
+          mlDsa65KeyPath: a.mlKey,
           manifest: manifest,
           sidecar: sidecar,
           idPrefix: 'org.elsewhere.',
@@ -217,6 +223,7 @@ void main() {
         tool: enrolled.tool,
         publicKeys: enrolled.publicKeys,
         ed25519KeyPath: enrolled.edKey,
+        mlDsa65KeyPath: enrolled.mlKey,
         manifest: _verifiedManifest({'trust_tier': null}),
       );
       File(p.join(synth.path, 'plugins', _id, 'manifest.json')).deleteSync();
