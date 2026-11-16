@@ -115,6 +115,6 @@ jobs:
       - name: Build the sdist and wheel
         run: uv build --sdist --wheel --out-dir sdks/python/dist sdks/python
       - name: Publish hellohq-plugin-sdk
-        uses: pypa/gh-action-pypi-publish@v1.13.0
+        uses: pypa/gh-action-pypi-publish@v1.14.3
         with:
           packages-dir: sdks/python/dist
